@@ -1,3 +1,6 @@
+// cheeky fix to avoid including rigidbody.h twice in the same project
+#ifndef RIGIDBODY_H
+#define RIGIDBODY_H
 #include <raylib.h>
 
 typedef struct Matrix3 {
@@ -24,14 +27,19 @@ typedef struct RigidBody {
 
   // Vector3 invInertiaMatrix;
   Matrix3 invInertiaMatrix;
+  float restitution;
+  float friction;
 } RigidBody;
+
+Matrix Matrix3ToMatrix(Matrix3);
 
 float ComputeInertiaMoment(Vector3[3], unsigned int);
 float ComputeInertiaProduct(Vector3[3], unsigned int, unsigned int);
 RigidBody CreateRB(Mesh *, float, Vector3);
-void DeinitRB(RigidBody *);
 
 Matrix TransformToMatrix(Vector3, Quaternion);
 // update rb based on timestep
 void UpdateRB(RigidBody *, float);
 void MeshComputeInertiaMatrix(Mesh *, float, Matrix3 *, Vector3 *, float *);
+void DeinitRB(RigidBody *);
+#endif

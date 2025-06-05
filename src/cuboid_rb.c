@@ -22,17 +22,22 @@ Matrix3 CuboidComputeInvInertiaMatrix(Vector3 dims, float density) {
 RigidBody CreateCuboidRB(float density, Vector3 pos, Vector3 dims) {
   Mesh *mesh = malloc(sizeof(Mesh));
   *mesh = GenMeshCube(dims.x, dims.y, dims.z);
+  // Model model = LoadModelFromMesh(GenMeshCube(dims.x, dims.y, dims.z));
   Matrix3 invIner = CuboidComputeInvInertiaMatrix(dims, density);
 
-  return (RigidBody){density,
-                     mesh,
-                     pos,
-                     QuaternionIdentity(),
-                     MatrixTranslate(pos.x, pos.y, pos.z),
-                     (dims.x * dims.y * dims.z),
-                     {0.0f, 0.0f, 0.0f}, // centerofmass compared to mesh origin
+  return (RigidBody){
+      .density = density,
+      .mesh = mesh,
+      .position = pos,
+      .rotation = QuaternionIdentity(),
+      .volume = (dims.x * dims.y * dims.z),
+      .centerOfMass = {0.0f, 0.0f,
+                       0.0f}, // centerofmass compared to mesh origin
 
-                     {0.0f, 0.0f, 0.0f}, // linVel,
-                     {0.0f, 0.0f, 0.0f}, // angMomentum,
-                     invIner};
+      .transform = MatrixTranslate(pos.x, pos.y, pos.z),
+      .linearVelocity = {0.0f, 0.0f, 0.0f},  // linVel,
+      .angularMomentum = {0.0f, 0.0f, 0.0f}, // angMomentum,
+      .invInertiaMatrix = invIner,
+      .restitution = 0.5f,
+      .friction = 0.0f};
 }

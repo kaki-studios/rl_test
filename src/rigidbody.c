@@ -17,6 +17,12 @@ float IToE(Vector3 in, unsigned int I) {
   return 0.0f;
 }
 
+Matrix Matrix3ToMatrix(Matrix3 in) {
+  Matrix out = (Matrix){in.m0, in.m3, in.m6, 0.0f, in.m1, in.m4, in.m7, 0.0f,
+                        in.m2, in.m5, in.m8, 0.0f, 0.0f,  0.0f,  0.0f,  0.0f};
+  return out;
+}
+
 Vector3 MultiplyMatrixVector3(Matrix3 mat, Vector3 v) {
   Vector3 result;
   result.x = mat.m0 * v.x + mat.m3 * v.y + mat.m6 * v.z;
@@ -172,14 +178,14 @@ void ApplyLinearVelocity(Vector3 *pos, Vector3 linearVelocity,
 Vector3 ComputeAngularVelocity(Matrix3 invInertiaMatrix, Quaternion rot,
                                Vector3 angMomentum) {
   // Step 1: Rotate angular momentum into local space
-  Quaternion invRot = QuaternionInvert(rot);
-  Vector3 localAngMom = Vector3RotateByQuaternion(angMomentum, invRot);
+  Vector3 localAngMom = Vector3RotateByQuaternion(angMomentum, rot);
 
   // Step 2: Multiply by I^-1
   Vector3 localAngVel = MultiplyMatrixVector3(invInertiaMatrix, localAngMom);
 
   // Step 3: Rotate result back to world space
-  Vector3 angVel = Vector3RotateByQuaternion(localAngVel, rot);
+  Quaternion invRot = QuaternionInvert(rot);
+  Vector3 angVel = Vector3RotateByQuaternion(localAngVel, invRot);
 
   return angVel;
 }
@@ -215,18 +221,19 @@ RigidBody CreateRB(Mesh *mesh, float density, Vector3 position) {
 
   Matrix3 invIner = InverseMatrix3(inertia);
   float volume = density / mass;
-  return (RigidBody){
-      .mesh = mesh,
-      .density = density,
-      .volume = volume,
-      .position = position,
-      .transform = MatrixTranslate(position.x, position.y, position.z),
-      .rotation = QuaternionIdentity(),
-      .centerOfMass = centerOfMass,
-      .linearVelocity = {0.0f, 0.0f, 0.0f},
-      .angularMomentum = {0.0f, 0.0f, 0.0f},
-      .invInertiaMatrix = invIner,
-  };
+  return (RigidBody){.mesh = mesh,
+                     .density = density,
+                     .volume = volume,
+                     .position = position,
+                     .rotation = QuaternionIdentity(),
+                     .transform =
+                         MatrixTranslate(position.x, position.y, position.z),
+                     .centerOfMass = centerOfMass,
+                     .linearVelocity = {0.0f, 0.0f, 0.0f},
+                     .angularMomentum = {0.0f, 0.0f, 0.0f},
+                     .invInertiaMatrix = invIner,
+                     .restitution = 1.0f,
+                     .friction = 0.0f};
 }
 
-// void DeinitRB(RigidBody *rb) { free(rb->mesh); }
+void DeinitRB(RigidBody *rb) { UnloadMesh(*rb->mesh); }
