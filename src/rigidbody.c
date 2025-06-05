@@ -1,42 +1,135 @@
-#include "rididbody.h"
+#include "rigidbody.h"
 #include <raylib.h>
 #include <raymath.h>
-#include <stdio.h>
 #include <stdlib.h>
 
-Vector3 ComputeInvInertiaMatrix(Vector3 dims) {
-
-  float volume = dims.x * dims.y * dims.z;
-  float x_sqr = dims.x * dims.x;
-  float y_sqr = dims.y * dims.y;
-  float z_sqr = dims.z * dims.z;
-
-  // applies only to cuboids
-  Vector3 invInertiaMatrix = (Vector3){
-      12.0 / (volume * (y_sqr + z_sqr)),
-      12.0 / (volume * (x_sqr + z_sqr)),
-      12.0 / (volume * (x_sqr + y_sqr)),
-  };
-  printf("(%f), (%f), (%f)\n", 1.0 / invInertiaMatrix.x,
-         1.0 / invInertiaMatrix.y, 1.0 / invInertiaMatrix.z);
-
-  return invInertiaMatrix;
+// helpers, maybe move into another file
+float Sq(float a) { return a * a; }
+float IToE(Vector3 in, unsigned int I) {
+  switch (I) {
+  case 0:
+    return in.x;
+  case 1:
+    return in.y;
+  case 2:
+    return in.z;
+  }
+  return 0.0f;
 }
 
-CuboidRigidBody CreateRB(float mass, Vector3 pos, Vector3 dims) {
-  Mesh *mesh = malloc(sizeof(Mesh));
-  *mesh = GenMeshCube(dims.x, dims.y, dims.z);
-  Vector3 invIner = ComputeInvInertiaMatrix(dims);
+Vector3 MultiplyMatrixVector3(Matrix3 mat, Vector3 v) {
+  Vector3 result;
+  result.x = mat.m0 * v.x + mat.m3 * v.y + mat.m6 * v.z;
+  result.y = mat.m1 * v.x + mat.m4 * v.y + mat.m7 * v.z;
+  result.z = mat.m2 * v.x + mat.m5 * v.y + mat.m8 * v.z;
+  return result;
+}
 
-  return (CuboidRigidBody){mass,
-                           mesh,
-                           pos,
-                           QuaternionIdentity(),
-                           MatrixTranslate(pos.x, pos.y, pos.z),
-                           dims,
-                           {0.0f, 0.0f, 0.0f}, // linVel,
-                           {0.0f, 0.0f, 0.0f}, // angMomentum,
-                           invIner};
+Matrix3 InverseMatrix3(Matrix3 mat) {
+  Matrix3 inv;
+
+  float a00 = mat.m0, a01 = mat.m3, a02 = mat.m6;
+  float a10 = mat.m1, a11 = mat.m4, a12 = mat.m7;
+  float a20 = mat.m2, a21 = mat.m5, a22 = mat.m8;
+
+  float det = a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20) +
+              a02 * (a10 * a21 - a11 * a20);
+
+  if (det == 0.0f) {
+    // Singular matrix, return identity or handle error
+    inv = (Matrix3){1, 0, 0, 0, 1, 0, 0, 0, 1};
+    return inv;
+  }
+
+  float invDet = 1.0f / det;
+
+  inv.m0 = (a11 * a22 - a12 * a21) * invDet;
+  inv.m3 = -(a01 * a22 - a02 * a21) * invDet;
+  inv.m6 = (a01 * a12 - a02 * a11) * invDet;
+
+  inv.m1 = -(a10 * a22 - a12 * a20) * invDet;
+  inv.m4 = (a00 * a22 - a02 * a20) * invDet;
+  inv.m7 = -(a00 * a12 - a02 * a10) * invDet;
+
+  inv.m2 = (a10 * a21 - a11 * a20) * invDet;
+  inv.m5 = -(a00 * a21 - a01 * a20) * invDet;
+  inv.m8 = (a00 * a11 - a01 * a10) * invDet;
+
+  return inv;
+}
+
+// real functions
+
+float ComputeInertiaProduct(Vector3 P[3], unsigned int I, unsigned int J) {
+  float r1 = 2.0 * IToE(P[0], I) * IToE(P[0], J) +
+             IToE(P[1], I) * IToE(P[2], J) + IToE(P[2], I) * IToE(P[1], J);
+
+  float r2 = 2.0 * IToE(P[1], I) * IToE(P[1], J) +
+             IToE(P[0], I) * IToE(P[2], J) + IToE(P[2], I) * IToE(P[0], J);
+
+  float r3 = 2.0 * IToE(P[2], I) * IToE(P[2], J) +
+             IToE(P[0], I) * IToE(P[1], J) + IToE(P[1], I) * IToE(P[0], J);
+  return r1 + r2 + r3;
+}
+
+float ComputeInertiaMoment(Vector3 P[3], unsigned int I) {
+  float r1 = Sq(IToE(P[0], I)) + IToE(P[1], I) * IToE(P[2], I);
+  float r2 = Sq(IToE(P[1], I)) + IToE(P[0], I) * IToE(P[2], I);
+  float r3 = Sq(IToE(P[2], I)) + IToE(P[0], I) * IToE(P[1], I);
+  return r1 + r2 + r3;
+}
+
+void MeshComputeInertiaMatrix(Mesh *mesh, float density, Matrix3 *I,
+                              Vector3 *CoM, float *massOut) {
+  float mass = 0.0f;
+  Vector3 massCenter = {0.0f, 0.f, 0.f};
+  bool usesIndices = mesh->indices != NULL;
+  float Ia = 0.f, Ib = 0.f, Ic = 0.f, Iap = 0.f, Ibp = 0.0, Icp = 0.0;
+  for (unsigned int I = 0; I < mesh->triangleCount; ++I) {
+    Vector3 P[3];
+    for (unsigned int J = 0; J < 3; ++J) {
+      unsigned int index;
+      if (usesIndices) {
+        index = mesh->indices[I * 3 + J];
+      } else {
+        index = I * 3 + J;
+      }
+      P[J].x = mesh->vertices[index * 3];
+      P[J].y = mesh->vertices[index * 3 + 1];
+      P[J].z = mesh->vertices[index * 3 + 2];
+    }
+    // this is signed
+    float DetJ = Vector3DotProduct(P[0], Vector3CrossProduct(P[1], P[2]));
+    float TetVolume = DetJ / 6.0f;
+    float TetMass = density * TetVolume;
+    // divide by 4 since the 4th point is the origin, get the average of their
+    // points
+    Vector3 TetMassCenter =
+        Vector3Scale(Vector3Add(Vector3Add(P[0], P[1]), P[2]), 0.25f);
+
+    Ia += DetJ * (ComputeInertiaMoment(P, 1) + ComputeInertiaMoment(P, 2));
+    Ib += DetJ * (ComputeInertiaMoment(P, 0) + ComputeInertiaMoment(P, 2));
+    Ic += DetJ * (ComputeInertiaMoment(P, 0) + ComputeInertiaMoment(P, 1));
+    Iap += DetJ * (ComputeInertiaProduct(P, 1, 2));
+    Ibp += DetJ * (ComputeInertiaProduct(P, 0, 1));
+    Icp += DetJ * (ComputeInertiaProduct(P, 0, 2));
+    massCenter = Vector3Add(Vector3Scale(TetMassCenter, TetMass), massCenter);
+    mass += TetMass;
+  }
+  massCenter = Vector3Scale(massCenter, 1 / mass);
+  Ia = density * Ia / 60.0f - mass * (Sq(massCenter.y) + Sq(massCenter.z));
+  Ib = density * Ib / 60.0f - mass * (Sq(massCenter.x) + Sq(massCenter.z));
+  Ic = density * Ic / 60.0f - mass * (Sq(massCenter.x) + Sq(massCenter.y));
+  Iap = density * Iap / 120.0f - mass * (massCenter.y * massCenter.z);
+  Ibp = density * Ibp / 120.0f - mass * (massCenter.x * massCenter.y);
+  Icp = density * Icp / 120.0f - mass * (massCenter.x * massCenter.z);
+
+  Matrix3 MatI = {
+      Ia, -Ibp, -Icp, -Ibp, Ib, -Iap, -Icp, -Iap, Ic,
+  };
+  *I = MatI;
+  *CoM = massCenter;
+  *massOut = mass;
 }
 
 Matrix TransformToMatrix(Vector3 pos, Quaternion rot) {
@@ -47,7 +140,6 @@ Matrix TransformToMatrix(Vector3 pos, Quaternion rot) {
   return res;
 }
 
-// TODO: angular momentum w/ inertia matrix
 void ApplyAngularVelocity(Quaternion *rot, Vector3 angularVelocity,
                           float deltaTime) {
   Quaternion w = {angularVelocity.x, angularVelocity.y, angularVelocity.z,
@@ -77,16 +169,14 @@ void ApplyLinearVelocity(Vector3 *pos, Vector3 linearVelocity,
   *pos = Vector3Add(*pos, deltaMove);
 }
 
-Vector3 ComputeAngularVelocity(Vector3 invInertiaMatrix, Quaternion rot,
+Vector3 ComputeAngularVelocity(Matrix3 invInertiaMatrix, Quaternion rot,
                                Vector3 angMomentum) {
   // Step 1: Rotate angular momentum into local space
   Quaternion invRot = QuaternionInvert(rot);
   Vector3 localAngMom = Vector3RotateByQuaternion(angMomentum, invRot);
 
-  // Step 2: Multiply by I^-1 (element-wise, since diagonal)
-  Vector3 localAngVel = {invInertiaMatrix.x * localAngMom.x,
-                         invInertiaMatrix.y * localAngMom.y,
-                         invInertiaMatrix.z * localAngMom.z};
+  // Step 2: Multiply by I^-1
+  Vector3 localAngVel = MultiplyMatrixVector3(invInertiaMatrix, localAngMom);
 
   // Step 3: Rotate result back to world space
   Vector3 angVel = Vector3RotateByQuaternion(localAngVel, rot);
@@ -94,7 +184,7 @@ Vector3 ComputeAngularVelocity(Vector3 invInertiaMatrix, Quaternion rot,
   return angVel;
 }
 
-void UpdateRB(CuboidRigidBody *rb, float deltaTime, Vector3 *angularVelocity) {
+void UpdateRB(RigidBody *rb, float deltaTime) {
   // steps:
   // update linear_momentum and angular_momentum if needed
   // calculate quat and pos based on them
@@ -110,7 +200,33 @@ void UpdateRB(CuboidRigidBody *rb, float deltaTime, Vector3 *angularVelocity) {
   ApplyAngularVelocity(&rb->rotation, angVel, deltaTime);
   // apply changes to transform matrix
   rb->transform = TransformToMatrix(rb->position, rb->rotation);
-  *angularVelocity = angVel;
 }
 
-void DeinitRB(CuboidRigidBody *rb) { free(rb->mesh); }
+RigidBody CreateRB(Mesh *mesh, float density, Vector3 position) {
+  Matrix3 inertia;
+  float mass;
+  Vector3 centerOfMass;
+  MeshComputeInertiaMatrix(mesh, density, &inertia, &centerOfMass, &mass);
+  for (unsigned long int I = 0; I < mesh->vertexCount; ++I) {
+    mesh->vertices[I * 3] = mesh->vertices[I * 3] - centerOfMass.x;
+    mesh->vertices[I * 3 + 1] = mesh->vertices[I * 3 + 1] - centerOfMass.y;
+    mesh->vertices[I * 3 + 2] = mesh->vertices[I * 3 + 2] - centerOfMass.z;
+  }
+
+  Matrix3 invIner = InverseMatrix3(inertia);
+  float volume = density / mass;
+  return (RigidBody){
+      .mesh = mesh,
+      .density = density,
+      .volume = volume,
+      .position = position,
+      .transform = MatrixTranslate(position.x, position.y, position.z),
+      .rotation = QuaternionIdentity(),
+      .centerOfMass = centerOfMass,
+      .linearVelocity = {0.0f, 0.0f, 0.0f},
+      .angularMomentum = {0.0f, 0.0f, 0.0f},
+      .invInertiaMatrix = invIner,
+  };
+}
+
+// void DeinitRB(RigidBody *rb) { free(rb->mesh); }

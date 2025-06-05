@@ -1,9 +1,7 @@
-#include "raylib.h"
-#include "rididbody.h"
-#include "rlgl.h"
+#include "cuboid_rb.h"
 #include <math.h>
+#include <raylib.h>
 #include <raymath.h>
-#include <stdio.h>
 
 #define CAMERA_RADIUS 15.0f
 
@@ -19,19 +17,21 @@ int main(void) {
   Camera3D camera = {0};
   Vector2 sphereCoords = {0.0f, 0.5f};
   camera.position = NewCamPos(sphereCoords, CAMERA_RADIUS);
-  printf("CAMPOS= %f, %f, %f\n", camera.position.x, camera.position.y,
-         camera.position.z);
 
   camera.target = (Vector3){0.0f, 0.0f, 0.0f}; // Looking at the origin
   camera.up = (Vector3){0.0f, 1.0f, 0.0f};     // Up vector
   camera.fovy = 45.0f;
   camera.projection = CAMERA_PERSPECTIVE;
-
-  CuboidRigidBody rb =
-      CreateRB(10.0f, (Vector3){0.0f, 0.0f, 0.0f}, (Vector3){2.0f, 6.0f, 0.1f});
-  // rb.linearVelocity = (Vector3){1.0f, 0.0f, 0.0f};
-  rb.angularMomentum = (Vector3){-10.0f, 0.01f, 0.f};
+  Vector3 dims = {3.0f, 6.0f, .5f};
+  RigidBody rb = CreateCuboidRB(0.2f, (Vector3){0.0f, 0.0f, 0.0f}, dims);
+  Mesh torus = GenMeshTorus(10.0f, 1.0f, 15, 20);
+  RigidBody rb2 = CreateRB(&torus, 2.0f, (Vector3){10.0f, 0.0f, 0.0f});
+  // rb2.linearVelocity = (Vector3){1.0f, 0.0f, 0.0f};
+  rb.angularMomentum = (Vector3){10.0f, 0.01f, 0.01f};
+  rb2.angularMomentum = (Vector3){0.f, 10.0f, 0.01f};
   Material mat = LoadMaterialDefault();
+  Material mat2 = LoadMaterialDefault();
+  mat2.maps[0].color = BLUE;
   double timeAcc = 0.0f;
   Vector3 angVel = {0.f, 0.f, 0.f};
 
@@ -45,29 +45,39 @@ int main(void) {
     double H = 0.001f;
     timeAcc += GetFrameTime();
     while (timeAcc >= H) {
-      UpdateRB(&rb, H, &angVel); // deltaTime is now constant
+      UpdateRB(&rb, H); // deltaTime is now constant
+      UpdateRB(&rb2, H);
+
       timeAcc -= H;
     }
 
-    printf("POS= %f, %f, %f\n", rb.position.x, rb.position.y, rb.position.z);
     // Draw
 
     BeginDrawing();
     ClearBackground(GRAY);
+    DrawFPS(50, 50);
 
     BeginMode3D(camera);
 
     DrawMesh(*rb.mesh, mat, rb.transform);
+    DrawMesh(*rb2.mesh, mat2, rb2.transform);
     // debug
-    // DrawLine3D(rb.position, Vector3Add(rb.position, rb.angularMomentum),
-    // GREEN); DrawLine3D(rb.position, Vector3Add(rb.position,
-    // rb.linearVelocity), RED);
-    DrawCylinderEx(rb.position, Vector3Add(rb.position, rb.angularMomentum),
-                   0.1f, 0.1f, 20, GREEN);
-    DrawCylinderEx(rb.position, Vector3Add(rb.position, rb.linearVelocity),
-                   0.1f, 0.1f, 20, RED);
-    DrawCylinderEx(rb.position, Vector3Add(rb.position, angVel), 0.1f, 0.1f, 20,
-                   BLUE);
+    DrawLine3D(rb.position, Vector3Add(rb.position, rb.angularMomentum), GREEN);
+    DrawLine3D(rb.position, Vector3Add(rb.position, rb.linearVelocity), RED);
+    DrawLine3D(rb2.position, Vector3Add(rb2.position, rb2.angularMomentum),
+               GREEN);
+    DrawLine3D(rb2.position, Vector3Add(rb2.position, rb2.linearVelocity), RED);
+    // DrawCylinderEx(rb.position, Vector3Add(rb.position, rb.angularMomentum),
+    //                0.1f, 0.1f, 20, GREEN);
+    // DrawCylinderEx(rb.position, Vector3Add(rb.position, rb.linearVelocity),
+    //                0.1f, 0.1f, 20, RED);
+    //
+    // DrawCylinderEx(rb2.position, Vector3Add(rb2.position,
+    // rb2.angularMomentum),
+    //                0.1f, 0.1f, 20, GREEN);
+    // DrawCylinderEx(rb2.position, Vector3Add(rb2.position,
+    // rb2.linearVelocity),
+    //                0.1f, 0.1f, 20, RED);
 
     DrawCylinderEx((Vector3){0.0f, 0.0f, 0.0f}, (Vector3){5.0f, 0.0f, 0.0f},
                    0.05f, 0.05f, 20, RED);
@@ -83,7 +93,6 @@ int main(void) {
   }
 
   // De-initialization
-  DeinitRB(&rb);
   CloseWindow(); // Close window and OpenGL context
 
   return 0;
@@ -116,11 +125,7 @@ void UpdateCamPos(Camera3D *camera, Vector2 *sphereCoords) {
     sphereCoords->x -= 1 * GetFrameTime();
   }
   sphereCoords->y = Clamp(sphereCoords->y, -PI / 2, PI / 2);
-  // instead of clamping x we can loop instead:
-  if (sphereCoords->x > PI) {
-    sphereCoords->x -= 2 * PI;
-  } else if (sphereCoords->x < -PI) {
-    sphereCoords->x += 2 * PI;
-  }
+  // instead of clamping x we can wrap instead:
+  sphereCoords->x = Wrap(sphereCoords->x, -PI, PI);
   camera->position = NewCamPos(*sphereCoords, CAMERA_RADIUS);
 }
