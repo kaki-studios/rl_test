@@ -2,88 +2,136 @@
 #include <float.h>
 #include <raylib.h>
 #include <raymath.h>
+#include <stdio.h>
 
-// TODO: double check the code since this is all from chatgpt
-static float ProjectBox(Vector3 axis, Vector3 center, Vector3 axes[3],
-                        Vector3 halfSize) {
-  return fabsf(Vector3DotProduct(axis, axes[0]) * halfSize.x) +
-         fabsf(Vector3DotProduct(axis, axes[1]) * halfSize.y) +
-         fabsf(Vector3DotProduct(axis, axes[2]) * halfSize.z);
+// Helper function to get axis from rotation matrix
+Vector3 GetMatrixAxis(Matrix m, int axis) {
+  switch (axis) {
+  case 0:
+    return (Vector3){m.m0, m.m1, m.m2}; // X axis
+  case 1:
+    return (Vector3){m.m4, m.m5, m.m6}; // Y axis
+  case 2:
+    return (Vector3){m.m8, m.m9, m.m10}; // Z axis
+  default:
+    return (Vector3){1, 0, 0};
+  }
 }
 
-// Collision test with MTV
+// Project OBB onto an axis and return min/max projection values
+void ProjectOBB(Vector3 center, Vector3 halfSize, Matrix rotation, Vector3 axis,
+                float *min, float *max) {
+  // Get the three axes of the OBB
+  Vector3 axisX = GetMatrixAxis(rotation, 0);
+  Vector3 axisY = GetMatrixAxis(rotation, 1);
+  Vector3 axisZ = GetMatrixAxis(rotation, 2);
+
+  // Project center onto axis
+  float centerProjection = Vector3DotProduct(center, axis);
+
+  // Calculate the projection of the half-extents onto the axis
+  float extent = fabsf(Vector3DotProduct(axisX, axis)) * halfSize.x +
+                 fabsf(Vector3DotProduct(axisY, axis)) * halfSize.y +
+                 fabsf(Vector3DotProduct(axisZ, axis)) * halfSize.z;
+
+  *min = centerProjection - extent;
+  *max = centerProjection + extent;
+}
+
+// Test separation along an axis and update MTV if needed
+bool TestSeparatingAxis(Vector3 p1, Vector3 s1, Matrix r1, Vector3 p2,
+                        Vector3 s2, Matrix r2, Vector3 axis, float *minOverlap,
+                        Vector3 *mtvAxis) {
+  // Normalize the axis
+  float axisLength = Vector3Length(axis);
+  if (axisLength < 1e-6f)
+    return false; // Degenerate axis
+
+  axis = Vector3Scale(axis, 1.0f / axisLength);
+
+  float min1, max1, min2, max2;
+  ProjectOBB(p1, s1, r1, axis, &min1, &max1);
+  ProjectOBB(p2, s2, r2, axis, &min2, &max2);
+
+  // Check for separation
+  if (max1 < min2 || max2 < min1) {
+    return true; // Separated
+  }
+
+  // Calculate overlap
+  float overlap = fminf(max1, max2) - fmaxf(min1, min2);
+
+  // Update MTV if this is the smallest overlap so far
+  if (overlap < *minOverlap) {
+    *minOverlap = overlap;
+    *mtvAxis = axis;
+
+    // Ensure MTV points from OBB1 to OBB2
+    Vector3 centerDiff = Vector3Subtract(p2, p1);
+    if (Vector3DotProduct(centerDiff, axis) < 0) {
+      *mtvAxis = Vector3Scale(axis, -1.0f);
+    }
+  }
+
+  return false; // Not separated
+}
+
 bool OBBvsOBB(Vector3 p1, Quaternion q1, Vector3 s1, Vector3 p2, Quaternion q2,
               Vector3 s2, Vector3 *mtv_out) {
-  Matrix R1 = QuaternionToMatrix(q1);
-  Matrix R2 = QuaternionToMatrix(q2);
+  // Convert quaternions to rotation matrices
+  Matrix r1 = QuaternionToMatrix(q1);
+  Matrix r2 = QuaternionToMatrix(q2);
 
-  Vector3 A[3] = {(Vector3){R1.m0, R1.m4, R1.m8},
-                  (Vector3){R1.m1, R1.m5, R1.m9},
-                  (Vector3){R1.m2, R1.m6, R1.m10}};
-  Vector3 B[3] = {(Vector3){R2.m0, R2.m4, R2.m8},
-                  (Vector3){R2.m1, R2.m5, R2.m9},
-                  (Vector3){R2.m2, R2.m6, R2.m10}};
+  // Half-sizes for easier calculations
+  Vector3 hs1 = Vector3Scale(s1, 0.5f);
+  Vector3 hs2 = Vector3Scale(s2, 0.5f);
 
-  Vector3 D = Vector3Subtract(p2, p1);
+  // Track minimum overlap and MTV
   float minOverlap = FLT_MAX;
-  Vector3 smallestAxis = {0};
+  Vector3 mtvAxis = {1, 0, 0};
 
-  Vector3 half1 = Vector3Scale(s1, 0.5f);
-  Vector3 half2 = Vector3Scale(s2, 0.5f);
+  // Test the 15 potential separating axes using SAT
 
+  // 1-3: Face normals of OBB1
   for (int i = 0; i < 3; i++) {
-    Vector3 axis = Vector3Normalize(A[i]);
-    float r1 = ProjectBox(axis, p1, A, half1);
-    float r2 = ProjectBox(axis, p2, B, half2);
-    float dist = fabsf(Vector3DotProduct(D, axis));
-    float overlap = r1 + r2 - dist;
-    if (overlap < 0)
-      return false;
-    if (overlap < minOverlap) {
-      minOverlap = overlap;
-      smallestAxis = axis;
+    Vector3 axis = GetMatrixAxis(r1, i);
+    if (TestSeparatingAxis(p1, hs1, r1, p2, hs2, r2, axis, &minOverlap,
+                           &mtvAxis)) {
+      return false; // Separated
     }
   }
 
+  // 4-6: Face normals of OBB2
   for (int i = 0; i < 3; i++) {
-    Vector3 axis = Vector3Normalize(B[i]);
-    float r1 = ProjectBox(axis, p1, A, half1);
-    float r2 = ProjectBox(axis, p2, B, half2);
-    float dist = fabsf(Vector3DotProduct(D, axis));
-    float overlap = r1 + r2 - dist;
-    if (overlap < 0)
-      return false;
-    if (overlap < minOverlap) {
-      minOverlap = overlap;
-      smallestAxis = axis;
+    Vector3 axis = GetMatrixAxis(r2, i);
+    if (TestSeparatingAxis(p1, hs1, r1, p2, hs2, r2, axis, &minOverlap,
+                           &mtvAxis)) {
+      return false; // Separated
     }
   }
 
-  // Cross product axes
+  // 7-15: Cross products of edge directions
   for (int i = 0; i < 3; i++) {
+    Vector3 axis1 = GetMatrixAxis(r1, i);
     for (int j = 0; j < 3; j++) {
-      Vector3 axis = Vector3CrossProduct(A[i], B[j]);
-      if (Vector3LengthSqr(axis) < EPSILON)
-        continue;
-      axis = Vector3Normalize(axis);
-      float r1 = ProjectBox(axis, p1, A, half1);
-      float r2 = ProjectBox(axis, p2, B, half2);
-      float dist = fabsf(Vector3DotProduct(D, axis));
-      float overlap = r1 + r2 - dist;
-      if (overlap < 0)
-        return false;
-      if (overlap < minOverlap) {
-        minOverlap = overlap;
-        smallestAxis = axis;
+      Vector3 axis2 = GetMatrixAxis(r2, j);
+      Vector3 crossAxis = Vector3CrossProduct(axis1, axis2);
+
+      // Skip near-parallel axes
+      if (Vector3Length(crossAxis) > 1e-6f) {
+        if (TestSeparatingAxis(p1, hs1, r1, p2, hs2, r2, crossAxis, &minOverlap,
+                               &mtvAxis)) {
+          return false; // Separated
+        }
       }
     }
   }
 
-  // Push direction
-  if (Vector3DotProduct(D, smallestAxis) < 0)
-    smallestAxis = Vector3Negate(smallestAxis);
+  // No separating axis found - collision detected
+  if (mtv_out) {
+    *mtv_out = Vector3Scale(mtvAxis, minOverlap);
+  }
 
-  *mtv_out = Vector3Scale(smallestAxis, minOverlap);
   return true;
 }
 
@@ -167,23 +215,27 @@ void ApplyImpulse(RigidBody *a, RigidBody *b, Vector3 contactPoint,
   }
 }
 
-void HandleCuboidCollisions(RigidBody *a, RigidBody *b, Vector3 aDims,
-                            Vector3 bDims) {
+static int collisionCount = 0;
+void HandleCuboidRBCollisions(RigidBody *a, RigidBody *b, Vector3 aDims,
+                              Vector3 bDims) {
 
   Vector3 mtv;
   if (OBBvsOBB(a->position, a->rotation, aDims, b->position, b->rotation, bDims,
                &mtv)) {
+    collisionCount++;
+    printf("COLLISION FOUND, COUNT: %d\n", collisionCount);
+    float penetration = Vector3Length(mtv);
     Vector3 normal = Vector3Normalize(mtv);
     Vector3 contactPoint = Vector3Lerp(a->position, b->position,
                                        0.5f); // approximate contact point
-
-    // Resolve position
-    a->position = Vector3Subtract(
-        a->position, Vector3Scale(normal, 0.5f * Vector3Length(mtv)));
-    b->position = Vector3Add(b->position,
-                             Vector3Scale(normal, 0.5f * Vector3Length(mtv)));
-
-    // Resolve velocity
-    ApplyImpulse(a, b, contactPoint, normal, Vector3Length(mtv));
+    const float slop = 0.0001f;
+    if (penetration > slop) {
+      // Resolve position
+      Vector3 correction = Vector3Scale(normal, (penetration - slop) * 0.5f);
+      a->position = Vector3Subtract(a->position, correction);
+      b->position = Vector3Add(b->position, correction);
+      // Resolve velocity
+      ApplyImpulse(a, b, contactPoint, normal, penetration);
+    }
   }
 }

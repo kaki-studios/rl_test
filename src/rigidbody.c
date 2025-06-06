@@ -232,8 +232,8 @@ RigidBody CreateRB(Mesh *mesh, float density, Vector3 position) {
                      .linearVelocity = {0.0f, 0.0f, 0.0f},
                      .angularMomentum = {0.0f, 0.0f, 0.0f},
                      .invInertiaMatrix = invIner,
-                     .restitution = 1.0f,
-                     .friction = 0.0f};
+                     .restitution = 0.5f,
+                     .friction = 0.5f};
 }
 
 void DeinitRB(RigidBody *rb) { UnloadMesh(*rb->mesh); }
