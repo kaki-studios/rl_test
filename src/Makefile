@@ -37,6 +37,7 @@ PROJECT_SOURCE_FILES  ?= \
 		rigidbody.c \
 		cuboid_rb.c \
 		collision.c \
+		staticbody.c \
 
 # raylib library variables
 RAYLIB_SRC_PATH       ?= /usr/local/include/
