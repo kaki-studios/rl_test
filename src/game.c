@@ -23,7 +23,7 @@ int main(void) {
   SetTargetFPS(60);
   // camera setup, rn just orbits center
   Camera3D camera = {0};
-  Vector2 sphereCoords = {0.0f, 0.5f};
+  Vector2 sphereCoords = {PI, 0.5f};
   camera.position = NewCamPos(sphereCoords, CAMERA_RADIUS);
 
   camera.target = (Vector3){0.0f, 0.0f, 0.0f}; // Looking at the origin
@@ -32,16 +32,19 @@ int main(void) {
   camera.projection = CAMERA_PERSPECTIVE;
 
   Vector3 rb_dims = {3.0f, 6.0f, .5f};
+  Vector3 sb_dims = {50.0f, 1.0f, 50.0f};
   RigidBody rbs[RB_COUNT];
+  CuboidStaticBody ground = CreateCuboidSB((Vector3){0.0f, -10.0f, 0.0f},
+                                           QuaternionIdentity(), sb_dims);
 
   rbs[0] = CreateCuboidRB(2.0f, (Vector3){0.0f, 0.0f, 10.0f}, rb_dims);
   rbs[0].angularMomentum = (Vector3){150.0f, 0.1f, 0.1f};
-  rbs[0].linearVelocity = (Vector3){0.0f, 0.0f, -1.0f};
+  // rbs[0].linearVelocity = (Vector3){0.0f, 0.0f, -1.0f};
 
   rbs[1] = CreateCuboidRB(2.0f, (Vector3){0.0f, 0.0f, -10.0f}, rb_dims);
 
   rbs[1].angularMomentum = (Vector3){100.f, 0.1f, 0.1f};
-  rbs[1].linearVelocity = (Vector3){0.0f, 0.0f, 1.0f};
+  // rbs[1].linearVelocity = (Vector3){0.0f, 0.0f, 1.0f};
 
   Material mat = LoadMaterialDefault();
   Texture2D tex = LoadTexture("./assets/grassblock.png");
@@ -104,6 +107,8 @@ int main(void) {
         UpdateRB(&rbs[i], H);
       }
       for (int i = 0; i < RB_COUNT; i++) {
+        // check ground collision
+        HandleCuboidRBSBCollisions(&rbs[i], &ground, rb_dims, sb_dims);
         for (int j = i + 1; j < RB_COUNT; j++) {
           HandleCuboidRBCollisions(&rbs[i], &rbs[j], rb_dims, rb_dims);
         }
@@ -127,6 +132,7 @@ int main(void) {
       DrawLine3D(rbs[i].position,
                  Vector3Add(rbs[i].position, rbs[i].linearVelocity), RED);
     }
+    DrawMesh(*ground.mesh, mat, ground.transform);
     DrawMesh(*rb2.mesh, hammerModel.materials[0], rb2.transform);
     DrawLine3D(rb2.position, Vector3Add(rb2.position, rb2.angularMomentum),
                GREEN);

@@ -198,7 +198,7 @@ void UpdateRB(RigidBody *rb, float deltaTime) {
   // calculate transform based on that
 
   // first: gravity
-  // rb->linearVelocity.y -= deltaTime * 9.81;
+  rb->linearVelocity.y -= deltaTime * 9.81;
   // move based on linear_momentum
   ApplyLinearVelocity(&rb->position, rb->linearVelocity, deltaTime);
   Vector3 angVel = ComputeAngularVelocity(rb->invInertiaMatrix, rb->rotation,
@@ -232,8 +232,8 @@ RigidBody CreateRB(Mesh *mesh, float density, Vector3 position) {
                      .linearVelocity = {0.0f, 0.0f, 0.0f},
                      .angularMomentum = {0.0f, 0.0f, 0.0f},
                      .invInertiaMatrix = invIner,
-                     .restitution = 0.5f,
-                     .friction = 0.5f};
+                     .restitution = 1.0f,
+                     .friction = 1.0f};
 }
 
 void DeinitRB(RigidBody *rb) { UnloadMesh(*rb->mesh); }

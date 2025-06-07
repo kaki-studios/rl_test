@@ -1,4 +1,5 @@
 #include "rigidbody.h"
+#include "staticbody.h"
 #include <raylib.h>
 
 bool OBBvsOBB(Vector3 p1, Quaternion q1, Vector3 s1, Vector3 p2, Quaternion q2,
@@ -9,3 +10,6 @@ void ApplyImpulse(RigidBody *a, RigidBody *b, Vector3 contactPoint,
 
 void HandleCuboidRBCollisions(RigidBody *a, RigidBody *b, Vector3 aDims,
                               Vector3 bDims);
+
+void HandleCuboidRBSBCollisions(RigidBody *a, CuboidStaticBody *b,
+                                Vector3 aDims, Vector3 bDims);

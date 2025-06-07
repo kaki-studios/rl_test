@@ -33,6 +33,8 @@ typedef struct RigidBody {
 
 Matrix Matrix3ToMatrix(Matrix3);
 
+Vector3 ComputeAngularVelocity(Matrix3, Quaternion, Vector3);
+
 float ComputeInertiaMoment(Vector3[3], unsigned int);
 float ComputeInertiaProduct(Vector3[3], unsigned int, unsigned int);
 RigidBody CreateRB(Mesh *, float, Vector3);

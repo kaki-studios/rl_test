@@ -7,6 +7,8 @@ typedef struct CuboidStaticBody {
   Vector3 position;
   Quaternion rotation;
   Vector3 dimensions;
+  float restitution;
+  float friction;
 
   Matrix transform;
 } CuboidStaticBody;

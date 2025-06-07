@@ -153,6 +153,7 @@ void ApplyImpulse(RigidBody *a, RigidBody *b, Vector3 contactPoint,
   Vector3 BCoM;
   float Bmass;
   MeshComputeInertiaMatrix(b->mesh, b->density, &Ib_inv, &BCoM, &Bmass);
+
   Vector3 wa = Vector3Transform(a->angularMomentum, Matrix3ToMatrix(Ia_inv));
   Vector3 wb = Vector3Transform(b->angularMomentum, Matrix3ToMatrix(Ib_inv));
 
@@ -178,7 +179,8 @@ void ApplyImpulse(RigidBody *a, RigidBody *b, Vector3 contactPoint,
       Vector3DotProduct(Vector3CrossProduct(Ib_rbCrossN, rb), normal);
 
   float j = -(1.0f + restitution) * contactVel / denom;
-  Vector3 impulse = Vector3Scale(normal, j);
+  // NOTE j*0.5 is my own thing, normally just j
+  Vector3 impulse = Vector3Scale(normal, j * 0.5f);
 
   // Apply linear impulse
   a->linearVelocity =
@@ -236,6 +238,88 @@ void HandleCuboidRBCollisions(RigidBody *a, RigidBody *b, Vector3 aDims,
       b->position = Vector3Add(b->position, correction);
       // Resolve velocity
       ApplyImpulse(a, b, contactPoint, normal, penetration);
+    }
+  }
+}
+
+// NOTE: DOESN't work
+void ApplyImpulseRBSB(RigidBody *a, CuboidStaticBody *b, Vector3 contactPoint,
+                      Vector3 normal, float penetrationDepth) {
+  float restitution = (a->restitution + b->restitution) * 0.5f;
+  float friction = (a->friction + b->friction) * 0.5f;
+
+  Vector3 ra = Vector3Subtract(contactPoint, a->position);
+
+  // Get inertia properties
+  Matrix3 Ia_inv;
+  Vector3 ACoM;
+  float Amass;
+  MeshComputeInertiaMatrix(a->mesh, a->density, &Ia_inv, &ACoM, &Amass);
+
+  // Convert angular momentum to angular velocity
+  Vector3 angularVelocity =
+      Vector3Transform(a->angularMomentum, Matrix3ToMatrix(Ia_inv));
+
+  // Calculate velocity at contact point
+  Vector3 velAtContact =
+      Vector3Add(a->linearVelocity, Vector3CrossProduct(angularVelocity, ra));
+
+  // Check relative velocity along normal
+  float velAlongNormal = Vector3DotProduct(velAtContact, normal);
+  if (velAlongNormal > 0.0f)
+    return; // Bodies are separating
+
+  // Calculate impulse magnitude
+  float invMass = 1.0f / Amass;
+
+  // Calculate rotational component contribution
+  Vector3 raCrossN = Vector3CrossProduct(ra, normal);
+  Vector3 Iinv_raCrossN = Vector3Transform(raCrossN, Matrix3ToMatrix(Ia_inv));
+  float angularTerm =
+      Vector3DotProduct(Vector3CrossProduct(Iinv_raCrossN, ra), normal);
+
+  // Calculate impulse magnitude
+  float j = -(1.0f + restitution) * velAlongNormal;
+  j /= (invMass + angularTerm);
+
+  Vector3 impulse = Vector3Scale(normal, j * 0.5f);
+
+  // Apply linear impulse
+  a->linearVelocity =
+      Vector3Add(a->linearVelocity, Vector3Scale(impulse, invMass));
+
+  // Apply angular impulse
+  a->angularMomentum =
+      Vector3Add(a->angularMomentum, Vector3CrossProduct(ra, impulse));
+
+  // Positional correction to prevent penetration
+  const float percent = 0.5f; // Correction strength
+  const float slop = 0.01f;   // Allowable penetration threshold
+
+  if (penetrationDepth > slop) {
+    float correctionMag = (penetrationDepth - slop) * percent * invMass;
+    Vector3 correction = Vector3Scale(normal, correctionMag);
+    a->position = Vector3Add(a->position, correction);
+  }
+}
+
+void HandleCuboidRBSBCollisions(RigidBody *a, CuboidStaticBody *b,
+                                Vector3 aDims, Vector3 bDims) {
+
+  Vector3 mtv;
+  if (OBBvsOBB(a->position, a->rotation, aDims, b->position, b->rotation, bDims,
+               &mtv)) {
+    float penetration = Vector3Length(mtv);
+    Vector3 normal = Vector3Normalize(mtv);
+    Vector3 contactPoint = Vector3Lerp(a->position, b->position,
+                                       0.5f); // approximate contact point
+    const float slop = 0.0001f;
+    if (penetration > slop) {
+      // Resolve position
+      Vector3 correction = Vector3Scale(normal, penetration - slop);
+      a->position = Vector3Subtract(a->position, correction);
+      // Resolve velocity
+      ApplyImpulseRBSB(a, b, contactPoint, normal, penetration);
     }
   }
 }
