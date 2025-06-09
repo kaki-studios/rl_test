@@ -1,9 +1,11 @@
 #include "collision.h"
+#include "cuboid_rb.h"
 #include <float.h>
 #include <raylib.h>
 #include <raymath.h>
 #include <stdio.h>
 
+static int collisionCount = 0;
 // Helper function to get axis from rotation matrix
 Vector3 GetMatrixAxis(Matrix m, int axis) {
   switch (axis) {
@@ -16,6 +18,35 @@ Vector3 GetMatrixAxis(Matrix m, int axis) {
   default:
     return (Vector3){1, 0, 0};
   }
+}
+
+// Helper function to find the closest point on an OBB to a given point
+Vector3 ClosestPointOnOBB(Vector3 point, Vector3 center, Vector3 halfSize,
+                          Matrix rotation) {
+  // Transform point to OBB's local space
+  Vector3 localPoint = Vector3Subtract(point, center);
+
+  // Get OBB axes
+  Vector3 axisX = GetMatrixAxis(rotation, 0);
+  Vector3 axisY = GetMatrixAxis(rotation, 1);
+  Vector3 axisZ = GetMatrixAxis(rotation, 2);
+
+  // Project point onto each axis and clamp to half-extents
+  float projX = Vector3DotProduct(localPoint, axisX);
+  float projY = Vector3DotProduct(localPoint, axisY);
+  float projZ = Vector3DotProduct(localPoint, axisZ);
+
+  projX = Clamp(projX, -halfSize.x, halfSize.x);
+  projY = Clamp(projY, -halfSize.y, halfSize.y);
+  projZ = Clamp(projZ, -halfSize.z, halfSize.z);
+
+  // Transform back to world space
+  Vector3 closestPoint = center;
+  closestPoint = Vector3Add(closestPoint, Vector3Scale(axisX, projX));
+  closestPoint = Vector3Add(closestPoint, Vector3Scale(axisY, projY));
+  closestPoint = Vector3Add(closestPoint, Vector3Scale(axisZ, projZ));
+
+  return closestPoint;
 }
 
 // Project OBB onto an axis and return min/max projection values
@@ -77,7 +108,7 @@ bool TestSeparatingAxis(Vector3 p1, Vector3 s1, Matrix r1, Vector3 p2,
 }
 
 bool OBBvsOBB(Vector3 p1, Quaternion q1, Vector3 s1, Vector3 p2, Quaternion q2,
-              Vector3 s2, Vector3 *mtv_out) {
+              Vector3 s2, Vector3 *mtv_out, Vector3 *contactPoint_out) {
   // Convert quaternions to rotation matrices
   Matrix r1 = QuaternionToMatrix(q1);
   Matrix r2 = QuaternionToMatrix(q2);
@@ -132,7 +163,281 @@ bool OBBvsOBB(Vector3 p1, Quaternion q1, Vector3 s1, Vector3 p2, Quaternion q2,
     *mtv_out = Vector3Scale(mtvAxis, minOverlap);
   }
 
+  // Calculate contact point if requested
+  if (contactPoint_out) {
+    // Find the closest points between the two OBBs
+    Vector3 closest1 = ClosestPointOnOBB(p2, p1, hs1, r1);
+    Vector3 closest2 = ClosestPointOnOBB(p1, p2, hs2, r2);
+
+    // The contact point is the midpoint between the closest points
+    *contactPoint_out = Vector3Scale(Vector3Add(closest1, closest2), 0.5f);
+  }
+
   return true;
+}
+
+void ApplyImpulseCuboidRB(RigidBody *rbA, RigidBody *rbB, Vector3 mtv,
+                          Vector3 contactPoint, Vector3 aDims, Vector3 bDims) {
+
+  // === STEP 1: POSITIONAL CORRECTION (SEPARATION) ===
+  Vector3 normal = Vector3Normalize(mtv);
+  float penetration = Vector3Length(mtv);
+
+  // Get inertia properties
+  Matrix3 Ia_inv = CuboidComputeInvInertiaMatrix(aDims, rbA->density);
+  float Amass = aDims.x * aDims.y * aDims.z * rbA->density;
+
+  Matrix3 Ib_inv = CuboidComputeInvInertiaMatrix(bDims, rbB->density);
+  float Bmass = bDims.x * bDims.y * bDims.z * rbB->density;
+
+  // Calculate correction based on mass ratio
+  float totalInvMass = (1.0f / Amass) + (1.0f / Bmass);
+
+  if (totalInvMass > 0.0f) {
+    float correctionPercent = 1.0f; // How much penetration to correct (80%)
+    float slop = 0.01f;             // Allow small penetration to avoid jitter
+    float correctionMagnitude =
+        fmaxf(penetration - slop, 0.0f) * correctionPercent / totalInvMass;
+
+    Vector3 correction = Vector3Scale(normal, correctionMagnitude);
+
+    float ratioA = (1.0f / Amass) / totalInvMass;
+    rbA->position =
+        Vector3Subtract(rbA->position, Vector3Scale(correction, ratioA));
+    float ratioB = (1.0f / Bmass) / totalInvMass;
+    rbB->position = Vector3Add(rbB->position, Vector3Scale(correction, ratioB));
+  }
+
+  // === STEP 2: IMPULSE RESOLUTION ===
+
+  // Calculate relative velocity at contact point
+  Vector3 rA = Vector3Subtract(contactPoint,
+                               rbA->position); // Contact point relative to A
+  Vector3 rB = Vector3Subtract(contactPoint,
+                               rbB->position); // Contact point relative to B
+  Vector3 wA =
+      ComputeAngularVelocity(Ia_inv, rbA->rotation, rbA->angularMomentum);
+  Vector3 wB =
+      ComputeAngularVelocity(Ib_inv, rbB->rotation, rbB->angularMomentum);
+
+  // Velocity at contact point = linear velocity + (angular velocity × radius)
+  Vector3 velA = Vector3Add(rbA->linearVelocity, Vector3CrossProduct(wA, rA));
+  Vector3 velB = Vector3Add(rbB->linearVelocity, Vector3CrossProduct(wA, rB));
+
+  Vector3 relativeVel = Vector3Subtract(velB, velA);
+  float velAlongNormal = Vector3DotProduct(relativeVel, normal);
+
+  // Don't resolve if objects are separating
+  if (velAlongNormal > 0)
+    return;
+
+  // Calculate restitution (bounciness)
+  float restitution = fminf(rbA->restitution, rbB->restitution);
+
+  // Calculate impulse scalar
+  float impulseScalar = -(1.0f + restitution) * velAlongNormal;
+
+  // Add rotational effects to impulse calculation
+  Vector3 rA_cross_n = Vector3CrossProduct(rA, normal);
+  Vector3 rB_cross_n = Vector3CrossProduct(rB, normal);
+
+  float rotationalEffect = 0.0f;
+  Vector3 temp = Vector3CrossProduct(rA_cross_n, rA);
+  temp = (Vector3){temp.x * Ia_inv.m0, temp.y * Ia_inv.m4, temp.z * Ia_inv.m8};
+  rotationalEffect += Vector3DotProduct(temp, normal);
+
+  Vector3 tempB = Vector3CrossProduct(rB_cross_n, rB);
+  tempB = (Vector3){temp.x * Ib_inv.m0, temp.y * Ib_inv.m4, temp.z * Ib_inv.m8};
+  rotationalEffect += Vector3DotProduct(tempB, normal);
+
+  impulseScalar /= totalInvMass + rotationalEffect;
+  Vector3 impulse = Vector3Scale(normal, impulseScalar);
+
+  // Apply linear impulses
+  rbA->linearVelocity =
+      Vector3Subtract(rbA->linearVelocity, Vector3Scale(impulse, 1.0f / Amass));
+  Vector3 angularImpulse =
+      Vector3CrossProduct(rA, Vector3Scale(impulse, -1.0f));
+  rbA->angularMomentum = Vector3Add(rbA->angularMomentum, angularImpulse);
+
+  rbB->linearVelocity =
+      Vector3Add(rbB->linearVelocity, Vector3Scale(impulse, 1.0f / Bmass));
+  Vector3 angularImpulseB = Vector3CrossProduct(rB, impulse);
+  rbB->angularMomentum = Vector3Add(rbB->angularMomentum, angularImpulseB);
+
+  // === STEP 3: FRICTION ===
+
+  // Recalculate relative velocity after normal impulse
+
+  wA = ComputeAngularVelocity(rbA->invInertiaMatrix, rbA->rotation,
+                              rbA->angularMomentum);
+
+  wB = ComputeAngularVelocity(rbB->invInertiaMatrix, rbB->rotation,
+                              rbB->angularMomentum);
+  velA = Vector3Add(rbA->linearVelocity, Vector3CrossProduct(wA, rA));
+  velB = Vector3Add(rbB->linearVelocity, Vector3CrossProduct(wB, rB));
+
+  relativeVel = Vector3Subtract(velB, velA);
+
+  // Calculate tangent vector (friction direction)
+  Vector3 tangent = Vector3Subtract(
+      relativeVel,
+      Vector3Scale(normal, Vector3DotProduct(relativeVel, normal)));
+  if (Vector3Length(tangent) > 1e-6f) {
+    tangent = Vector3Normalize(tangent);
+
+    float friction = sqrtf(rbA->friction * rbB->friction); // Geometric mean
+    float frictionImpulse = -Vector3DotProduct(relativeVel, tangent);
+
+    // Coulomb friction model
+    if (fabsf(frictionImpulse) < impulseScalar * friction) {
+      // Static friction
+      frictionImpulse = frictionImpulse;
+    } else {
+      // Kinetic friction
+      frictionImpulse =
+          -impulseScalar * friction * (frictionImpulse > 0 ? 1.0f : -1.0f);
+    }
+
+    Vector3 frictionVector = Vector3Scale(tangent, frictionImpulse);
+
+    // Apply friction impulses
+    rbA->linearVelocity = Vector3Subtract(
+        rbA->linearVelocity, Vector3Scale(frictionVector, 1.0f / Amass));
+    Vector3 angularFriction =
+        Vector3CrossProduct(rA, Vector3Scale(frictionVector, -1.0f));
+    rbA->angularMomentum = Vector3Add(rbA->angularMomentum, angularFriction);
+
+    rbB->linearVelocity = Vector3Add(
+        rbB->linearVelocity, Vector3Scale(frictionVector, 1.0f / Bmass));
+    Vector3 angularFrictionB = Vector3CrossProduct(rB, frictionVector);
+    rbB->angularMomentum = Vector3Add(rbB->angularMomentum, angularFrictionB);
+  }
+
+  // Optional: Debug output
+  printf("Collision: %d, Impulse: %.2f, Contact: (%.2f,%.2f,%.2f)\n",
+         collisionCount, impulseScalar, contactPoint.x, contactPoint.y,
+         contactPoint.z);
+}
+
+void ApplyImpulseCuboidRBSB(RigidBody *rbA, CuboidStaticBody *rbB, Vector3 mtv,
+                            Vector3 contactPoint, Vector3 aDims,
+                            Vector3 bDims) {
+
+  // === STEP 1: POSITIONAL CORRECTION (SEPARATION) ===
+  Vector3 normal = Vector3Normalize(mtv);
+  float penetration = Vector3Length(mtv);
+
+  // Get inertia properties
+  Matrix3 Ia_inv = CuboidComputeInvInertiaMatrix(aDims, rbA->density);
+  float Amass = aDims.x * aDims.y * aDims.z * rbA->density;
+
+  // Calculate correction based on mass ratio
+  float totalInvMass = (1.0f / Amass);
+
+  if (totalInvMass > 0.0f) {
+    float correctionPercent = 1.0f; // How much penetration to correct (80%)
+    float slop = 0.001f;            // Allow small penetration to avoid jitter
+    float correctionMagnitude =
+        fmaxf(penetration - slop, 0.0f) * correctionPercent / totalInvMass;
+
+    Vector3 correction = Vector3Scale(normal, correctionMagnitude);
+
+    float ratioA = (1.0f / Amass) / totalInvMass;
+    rbA->position =
+        Vector3Subtract(rbA->position, Vector3Scale(correction, ratioA));
+  }
+
+  // === STEP 2: IMPULSE RESOLUTION ===
+
+  // Calculate relative velocity at contact point
+  Vector3 rA = Vector3Subtract(contactPoint,
+                               rbA->position); // Contact point relative to A
+  Vector3 rB = Vector3Subtract(contactPoint,
+                               rbB->position); // Contact point relative to B
+  Vector3 wA =
+      ComputeAngularVelocity(Ia_inv, rbA->rotation, rbA->angularMomentum);
+
+  // Velocity at contact point = linear velocity + (angular velocity × radius)
+  Vector3 velA = Vector3Add(rbA->linearVelocity, Vector3CrossProduct(wA, rA));
+
+  Vector3 relativeVel = Vector3Subtract(Vector3Zero(), velA);
+  float velAlongNormal = Vector3DotProduct(relativeVel, normal);
+
+  // Don't resolve if objects are separating
+  if (velAlongNormal > 0)
+    return;
+
+  // Calculate restitution (bounciness)
+  float restitution = fminf(rbA->restitution, rbB->restitution);
+
+  // Calculate impulse scalar
+  float impulseScalar = -(1.0f + restitution) * velAlongNormal;
+
+  // Add rotational effects to impulse calculation
+  Vector3 rA_cross_n = Vector3CrossProduct(rA, normal);
+  Vector3 rB_cross_n = Vector3CrossProduct(rB, normal);
+
+  float rotationalEffect = 0.0f;
+  Vector3 temp = Vector3CrossProduct(rA_cross_n, rA);
+  temp = (Vector3){temp.x * Ia_inv.m0, temp.y * Ia_inv.m4, temp.z * Ia_inv.m8};
+  rotationalEffect += Vector3DotProduct(temp, normal);
+
+  impulseScalar /= totalInvMass + rotationalEffect;
+  Vector3 impulse = Vector3Scale(normal, impulseScalar);
+
+  // Apply linear impulses
+  rbA->linearVelocity =
+      Vector3Subtract(rbA->linearVelocity, Vector3Scale(impulse, 1.0f / Amass));
+  Vector3 angularImpulse =
+      Vector3CrossProduct(rA, Vector3Scale(impulse, -1.0f));
+  rbA->angularMomentum = Vector3Add(rbA->angularMomentum, angularImpulse);
+
+  // === STEP 3: FRICTION ===
+
+  // Recalculate relative velocity after normal impulse
+
+  wA = ComputeAngularVelocity(rbA->invInertiaMatrix, rbA->rotation,
+                              rbA->angularMomentum);
+
+  velA = Vector3Add(rbA->linearVelocity, Vector3CrossProduct(wA, rA));
+
+  relativeVel = Vector3Subtract(Vector3Zero(), velA);
+
+  // Calculate tangent vector (friction direction)
+  Vector3 tangent = Vector3Subtract(
+      relativeVel,
+      Vector3Scale(normal, Vector3DotProduct(relativeVel, normal)));
+  if (Vector3Length(tangent) > 1e-6f) {
+    tangent = Vector3Normalize(tangent);
+
+    float friction = sqrtf(rbA->friction * rbB->friction); // Geometric mean
+    float frictionImpulse = -Vector3DotProduct(relativeVel, tangent);
+
+    // Coulomb friction model
+    if (fabsf(frictionImpulse) < impulseScalar * friction) {
+      // Static friction
+      frictionImpulse = frictionImpulse;
+    } else {
+      // Kinetic friction
+      frictionImpulse =
+          -impulseScalar * friction * (frictionImpulse > 0 ? 1.0f : -1.0f);
+    }
+
+    Vector3 frictionVector = Vector3Scale(tangent, frictionImpulse);
+
+    // Apply friction impulses
+    rbA->linearVelocity = Vector3Subtract(
+        rbA->linearVelocity, Vector3Scale(frictionVector, 1.0f / Amass));
+    Vector3 angularFriction =
+        Vector3CrossProduct(rA, Vector3Scale(frictionVector, -1.0f));
+    rbA->angularMomentum = Vector3Add(rbA->angularMomentum, angularFriction);
+  }
+
+  // Optional: Debug output
+  printf("Collision: %d, Impulse: %.2f, Contact: (%.2f,%.2f,%.2f)\n",
+         collisionCount, impulseScalar, contactPoint.x, contactPoint.y,
+         contactPoint.z);
 }
 
 void ApplyImpulse(RigidBody *a, RigidBody *b, Vector3 contactPoint,
@@ -154,8 +459,8 @@ void ApplyImpulse(RigidBody *a, RigidBody *b, Vector3 contactPoint,
   float Bmass;
   MeshComputeInertiaMatrix(b->mesh, b->density, &Ib_inv, &BCoM, &Bmass);
 
-  Vector3 wa = Vector3Transform(a->angularMomentum, Matrix3ToMatrix(Ia_inv));
-  Vector3 wb = Vector3Transform(b->angularMomentum, Matrix3ToMatrix(Ib_inv));
+  Vector3 wa = ComputeAngularVelocity(Ia_inv, a->rotation, a->angularMomentum);
+  Vector3 wb = ComputeAngularVelocity(Ib_inv, b->rotation, b->angularMomentum);
 
   // Compute linearVelocity at contact point
   Vector3 va = Vector3Add(a->linearVelocity, Vector3CrossProduct(wa, ra));
@@ -217,32 +522,31 @@ void ApplyImpulse(RigidBody *a, RigidBody *b, Vector3 contactPoint,
   }
 }
 
-static int collisionCount = 0;
 void HandleCuboidRBCollisions(RigidBody *a, RigidBody *b, Vector3 aDims,
                               Vector3 bDims) {
 
   Vector3 mtv;
+  Vector3 contactPoint;
   if (OBBvsOBB(a->position, a->rotation, aDims, b->position, b->rotation, bDims,
-               &mtv)) {
+               &mtv, &contactPoint)) {
     collisionCount++;
     printf("COLLISION FOUND, COUNT: %d\n", collisionCount);
     float penetration = Vector3Length(mtv);
     Vector3 normal = Vector3Normalize(mtv);
-    Vector3 contactPoint = Vector3Lerp(a->position, b->position,
-                                       0.5f); // approximate contact point
     const float slop = 0.0001f;
     if (penetration > slop) {
       // Resolve position
       Vector3 correction = Vector3Scale(normal, (penetration - slop) * 0.5f);
-      a->position = Vector3Subtract(a->position, correction);
-      b->position = Vector3Add(b->position, correction);
+      // a->position = Vector3Subtract(a->position, correction);
+      // b->position = Vector3Add(b->position, correction);
       // Resolve velocity
-      ApplyImpulse(a, b, contactPoint, normal, penetration);
+      // ApplyImpulse(a, b, contactPoint, normal, penetration);
+      ApplyImpulseCuboidRB(a, b, mtv, contactPoint, aDims, bDims);
     }
   }
 }
 
-// NOTE: DOESN't work
+// NOTE: DOESN't work properly
 void ApplyImpulseRBSB(RigidBody *a, CuboidStaticBody *b, Vector3 contactPoint,
                       Vector3 normal, float penetrationDepth) {
   float restitution = (a->restitution + b->restitution) * 0.5f;
@@ -257,8 +561,11 @@ void ApplyImpulseRBSB(RigidBody *a, CuboidStaticBody *b, Vector3 contactPoint,
   MeshComputeInertiaMatrix(a->mesh, a->density, &Ia_inv, &ACoM, &Amass);
 
   // Convert angular momentum to angular velocity
+  // Vector3 angularVelocity =
+  //     Vector3Transform(a->angularMomentum, Matrix3ToMatrix(Ia_inv));
+
   Vector3 angularVelocity =
-      Vector3Transform(a->angularMomentum, Matrix3ToMatrix(Ia_inv));
+      ComputeAngularVelocity(Ia_inv, a->rotation, a->angularMomentum);
 
   // Calculate velocity at contact point
   Vector3 velAtContact =
@@ -282,18 +589,19 @@ void ApplyImpulseRBSB(RigidBody *a, CuboidStaticBody *b, Vector3 contactPoint,
   float j = -(1.0f + restitution) * velAlongNormal;
   j /= (invMass + angularTerm);
 
-  Vector3 impulse = Vector3Scale(normal, j * 0.5f);
+  Vector3 impulse = Vector3Scale(normal, j);
+  printf("impulse: (%f, %f, %f)", impulse.x, impulse.y, impulse.z);
 
   // Apply linear impulse
-  a->linearVelocity =
-      Vector3Add(a->linearVelocity, Vector3Scale(impulse, invMass));
+  // a->linearVelocity =
+  //     Vector3Add(a->linearVelocity, Vector3Scale(impulse, invMass));
 
   // Apply angular impulse
   a->angularMomentum =
       Vector3Add(a->angularMomentum, Vector3CrossProduct(ra, impulse));
 
   // Positional correction to prevent penetration
-  const float percent = 0.5f; // Correction strength
+  const float percent = 0.2f; // Correction strength
   const float slop = 0.01f;   // Allowable penetration threshold
 
   if (penetrationDepth > slop) {
@@ -307,19 +615,19 @@ void HandleCuboidRBSBCollisions(RigidBody *a, CuboidStaticBody *b,
                                 Vector3 aDims, Vector3 bDims) {
 
   Vector3 mtv;
+  Vector3 contactPoint;
   if (OBBvsOBB(a->position, a->rotation, aDims, b->position, b->rotation, bDims,
-               &mtv)) {
+               &mtv, &contactPoint)) {
+    collisionCount++;
     float penetration = Vector3Length(mtv);
     Vector3 normal = Vector3Normalize(mtv);
-    Vector3 contactPoint = Vector3Lerp(a->position, b->position,
-                                       0.5f); // approximate contact point
     const float slop = 0.0001f;
     if (penetration > slop) {
       // Resolve position
       Vector3 correction = Vector3Scale(normal, penetration - slop);
-      a->position = Vector3Subtract(a->position, correction);
+      // a->position = Vector3Subtract(a->position, correction);
       // Resolve velocity
-      ApplyImpulseRBSB(a, b, contactPoint, normal, penetration);
+      ApplyImpulseCuboidRBSB(a, b, mtv, contactPoint, aDims, bDims);
     }
   }
 }

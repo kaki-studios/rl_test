@@ -34,17 +34,17 @@ int main(void) {
   Vector3 rb_dims = {3.0f, 6.0f, .5f};
   Vector3 sb_dims = {50.0f, 1.0f, 50.0f};
   RigidBody rbs[RB_COUNT];
-  CuboidStaticBody ground = CreateCuboidSB((Vector3){0.0f, -10.0f, 0.0f},
+  CuboidStaticBody ground = CreateCuboidSB((Vector3){0.0f, -1.0f, 0.0f},
                                            QuaternionIdentity(), sb_dims);
 
-  rbs[0] = CreateCuboidRB(2.0f, (Vector3){0.0f, 0.0f, 10.0f}, rb_dims);
+  rbs[0] = CreateCuboidRB(2.0f, (Vector3){20.0f, 5.0f, 0.0f}, rb_dims);
   rbs[0].angularMomentum = (Vector3){150.0f, 0.1f, 0.1f};
-  // rbs[0].linearVelocity = (Vector3){0.0f, 0.0f, -1.0f};
+  rbs[0].linearVelocity = (Vector3){-3.0f, -1.0f, 0.0f};
 
-  rbs[1] = CreateCuboidRB(2.0f, (Vector3){0.0f, 0.0f, -10.0f}, rb_dims);
+  rbs[1] = CreateCuboidRB(2.0f, (Vector3){-20.0f, 5.0f, 0.0f}, rb_dims);
 
   rbs[1].angularMomentum = (Vector3){100.f, 0.1f, 0.1f};
-  // rbs[1].linearVelocity = (Vector3){0.0f, 0.0f, 1.0f};
+  rbs[1].linearVelocity = (Vector3){3.0f, -1.0f, 0.0f};
 
   Material mat = LoadMaterialDefault();
   Texture2D tex = LoadTexture("./assets/grassblock.png");

@@ -198,7 +198,7 @@ void UpdateRB(RigidBody *rb, float deltaTime) {
   // calculate transform based on that
 
   // first: gravity
-  rb->linearVelocity.y -= deltaTime * 9.81;
+  // rb->linearVelocity.y -= deltaTime * 9.81;
   // move based on linear_momentum
   ApplyLinearVelocity(&rb->position, rb->linearVelocity, deltaTime);
   Vector3 angVel = ComputeAngularVelocity(rb->invInertiaMatrix, rb->rotation,
