@@ -24,13 +24,15 @@ RigidBody CreateCuboidRB(float density, Vector3 pos, Vector3 dims) {
   *mesh = GenMeshCube(dims.x, dims.y, dims.z);
   // Model model = LoadModelFromMesh(GenMeshCube(dims.x, dims.y, dims.z));
   Matrix3 invIner = CuboidComputeInvInertiaMatrix(dims, density);
+  float volume = dims.x * dims.y * dims.z;
+  float invMass = 1.0f / (volume * density);
 
   return (RigidBody){
       .density = density,
       .mesh = mesh,
       .position = pos,
       .rotation = QuaternionIdentity(),
-      .volume = (dims.x * dims.y * dims.z),
+      .invMass = invMass,
       .centerOfMass = {0.0f, 0.0f,
                        0.0f}, // centerofmass compared to mesh origin
 
@@ -38,6 +40,6 @@ RigidBody CreateCuboidRB(float density, Vector3 pos, Vector3 dims) {
       .linearVelocity = {0.0f, 0.0f, 0.0f},  // linVel,
       .angularMomentum = {0.0f, 0.0f, 0.0f}, // angMomentum,
       .invInertiaMatrix = invIner,
-      .restitution = 0.5f,
-      .friction = 0.0f};
+      .restitution = 0.1f,
+      .friction = 1.0f};
 }

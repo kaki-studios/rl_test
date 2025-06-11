@@ -18,7 +18,8 @@ typedef struct RigidBody {
 
   Matrix transform;
 
-  float volume;
+  // float volume;
+  float invMass; // 0 for staticbodies
   Vector3 centerOfMass;
 
   Vector3 linearVelocity; // from center of mass
@@ -26,12 +27,16 @@ typedef struct RigidBody {
   Vector3 angularMomentum;
 
   // Vector3 invInertiaMatrix;
-  Matrix3 invInertiaMatrix;
+  Matrix3 invInertiaMatrix; // 0 for staticbodies
   float restitution;
   float friction;
 } RigidBody;
 
 Matrix Matrix3ToMatrix(Matrix3);
+Matrix3 StripMatrixToMatrix3(Matrix);
+Matrix ComputeWorldInertia(Matrix, Quaternion);
+
+Vector3 MultiplyMatrixVector3(Matrix3, Vector3);
 
 Vector3 ComputeAngularVelocity(Matrix3, Quaternion, Vector3);
 

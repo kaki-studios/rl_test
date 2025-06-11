@@ -4,6 +4,25 @@
 #include <stdlib.h>
 
 // helpers, maybe move into another file
+//
+
+Matrix3 Matrix3Mult(Matrix3 a, Matrix3 b) {
+  Matrix3 result;
+
+  result.m0 = a.m0 * b.m0 + a.m3 * b.m1 + a.m6 * b.m2;
+  result.m1 = a.m1 * b.m0 + a.m4 * b.m1 + a.m7 * b.m2;
+  result.m2 = a.m2 * b.m0 + a.m5 * b.m1 + a.m8 * b.m2;
+
+  result.m3 = a.m0 * b.m3 + a.m3 * b.m4 + a.m6 * b.m5;
+  result.m4 = a.m1 * b.m3 + a.m4 * b.m4 + a.m7 * b.m5;
+  result.m5 = a.m2 * b.m3 + a.m5 * b.m4 + a.m8 * b.m5;
+
+  result.m6 = a.m0 * b.m6 + a.m3 * b.m7 + a.m6 * b.m8;
+  result.m7 = a.m1 * b.m6 + a.m4 * b.m7 + a.m7 * b.m8;
+  result.m8 = a.m2 * b.m6 + a.m5 * b.m7 + a.m8 * b.m8;
+
+  return result;
+}
 float Sq(float a) { return a * a; }
 float IToE(Vector3 in, unsigned int I) {
   switch (I) {
@@ -21,6 +40,29 @@ Matrix Matrix3ToMatrix(Matrix3 in) {
   Matrix out = (Matrix){in.m0, in.m3, in.m6, 0.0f, in.m1, in.m4, in.m7, 0.0f,
                         in.m2, in.m5, in.m8, 0.0f, 0.0f,  0.0f,  0.0f,  0.0f};
   return out;
+}
+
+Matrix3 StripMatrixToMatrix3(Matrix in) {
+  Matrix3 out = (Matrix3){
+      in.m0, in.m4, in.m8, in.m1, in.m5, in.m9, in.m2, in.m6, in.m10,
+  };
+  return out;
+}
+
+Matrix ComputeWorldInertia(Matrix bodyInertia, Quaternion orientation) {
+  // Convert quaternion to rotation matrix
+  Matrix R = QuaternionToMatrix(orientation);
+
+  // Compute R^T (transpose)
+  Matrix RT = MatrixTranspose(R);
+
+  // Compute R * J
+  Matrix temp = MatrixMultiply(R, bodyInertia);
+
+  // Compute (R * J) * R^T = R * J * R^T
+  Matrix worldInertia = MatrixMultiply(temp, RT);
+
+  return worldInertia;
 }
 
 Vector3 MultiplyMatrixVector3(Matrix3 mat, Vector3 v) {
@@ -177,17 +219,24 @@ void ApplyLinearVelocity(Vector3 *pos, Vector3 linearVelocity,
 
 Vector3 ComputeAngularVelocity(Matrix3 invInertiaMatrix, Quaternion rot,
                                Vector3 angMomentum) {
-  // Step 1: Rotate angular momentum into local space
-  Vector3 localAngMom = Vector3RotateByQuaternion(angMomentum, rot);
+  Matrix R = QuaternionToMatrix(rot);
+  Matrix3 Rt = StripMatrixToMatrix3(MatrixTranspose(R));
+  Matrix3 I_inv_world =
+      Matrix3Mult(Matrix3Mult(StripMatrixToMatrix3(R), invInertiaMatrix), Rt);
+  return MultiplyMatrixVector3(I_inv_world, angMomentum);
+  // // Step 1: Rotate angular momentum into local space
+  // Vector3 localAngMom = Vector3RotateByQuaternion(angMomentum, invRot);
+  // Vector3 localAngMom = Vector3RotateByQuaternion(angMomentum, rot);
 
   // Step 2: Multiply by I^-1
-  Vector3 localAngVel = MultiplyMatrixVector3(invInertiaMatrix, localAngMom);
+  // Vector3 localAngVel = MultiplyMatrixVector3(invInertiaMatrix, localAngMom);
+  // Vector3 angVel = MultiplyMatrixVector3(invInertiaMatrix, angMomentum);
 
-  // Step 3: Rotate result back to world space
-  Quaternion invRot = QuaternionInvert(rot);
-  Vector3 angVel = Vector3RotateByQuaternion(localAngVel, invRot);
+  // // Step 3: Rotate result back to world space
+  // Vector3 angVel = Vector3RotateByQuaternion(localAngVel, rot);
+  // Vector3 angVel = Vector3RotateByQuaternion(localAngVel, invRot);
 
-  return angVel;
+  // return angVel;
 }
 
 void UpdateRB(RigidBody *rb, float deltaTime) {
@@ -198,7 +247,9 @@ void UpdateRB(RigidBody *rb, float deltaTime) {
   // calculate transform based on that
 
   // first: gravity
-  // rb->linearVelocity.y -= deltaTime * 9.81;
+  // if (rb->invMass != 0.0f) {
+  //   rb->linearVelocity.y -= deltaTime * 9.81;
+  // }
   // move based on linear_momentum
   ApplyLinearVelocity(&rb->position, rb->linearVelocity, deltaTime);
   Vector3 angVel = ComputeAngularVelocity(rb->invInertiaMatrix, rb->rotation,
@@ -220,10 +271,9 @@ RigidBody CreateRB(Mesh *mesh, float density, Vector3 position) {
   }
 
   Matrix3 invIner = InverseMatrix3(inertia);
-  float volume = density / mass;
   return (RigidBody){.mesh = mesh,
                      .density = density,
-                     .volume = volume,
+                     .invMass = 1.0f / mass,
                      .position = position,
                      .rotation = QuaternionIdentity(),
                      .transform =
@@ -232,7 +282,7 @@ RigidBody CreateRB(Mesh *mesh, float density, Vector3 position) {
                      .linearVelocity = {0.0f, 0.0f, 0.0f},
                      .angularMomentum = {0.0f, 0.0f, 0.0f},
                      .invInertiaMatrix = invIner,
-                     .restitution = 1.0f,
+                     .restitution = 0.1f,
                      .friction = 1.0f};
 }
 

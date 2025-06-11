@@ -5,6 +5,9 @@
 #include <raylib.h>
 #include <raymath.h>
 
+#define RAYGUI_IMPLEMENTATION
+#include "raygui.h"
+
 #define CAMERA_RADIUS 15.0f
 #define RB_COUNT 2
 #if defined(PLATFORM_DESKTOP)
@@ -16,6 +19,8 @@
 Vector3 NewCamPos(Vector2, float);
 void UpdateCamPos(Camera3D *, Vector2 *);
 
+static float simulationSpeed = 0.0f;
+
 int main(void) {
   const int width = 800;
   const int height = 400;
@@ -23,7 +28,7 @@ int main(void) {
   SetTargetFPS(60);
   // camera setup, rn just orbits center
   Camera3D camera = {0};
-  Vector2 sphereCoords = {PI, 0.5f};
+  Vector2 sphereCoords = {PI / 2, 0.25f};
   camera.position = NewCamPos(sphereCoords, CAMERA_RADIUS);
 
   camera.target = (Vector3){0.0f, 0.0f, 0.0f}; // Looking at the origin
@@ -34,10 +39,10 @@ int main(void) {
   Vector3 rb_dims = {3.0f, 6.0f, .5f};
   Vector3 sb_dims = {50.0f, 1.0f, 50.0f};
   RigidBody rbs[RB_COUNT];
-  CuboidStaticBody ground = CreateCuboidSB((Vector3){0.0f, -1.0f, 0.0f},
-                                           QuaternionIdentity(), sb_dims);
+  RigidBody ground = CreateCuboidSB((Vector3){0.0f, -1.0f, 0.0f},
+                                    QuaternionIdentity(), sb_dims);
 
-  rbs[0] = CreateCuboidRB(2.0f, (Vector3){20.0f, 5.0f, 0.0f}, rb_dims);
+  rbs[0] = CreateCuboidRB(2.0f, (Vector3){0.0f, 5.0f, 0.0f}, rb_dims);
   rbs[0].angularMomentum = (Vector3){150.0f, 0.1f, 0.1f};
   rbs[0].linearVelocity = (Vector3){-3.0f, -1.0f, 0.0f};
 
@@ -47,17 +52,13 @@ int main(void) {
   rbs[1].linearVelocity = (Vector3){3.0f, -1.0f, 0.0f};
 
   Material mat = LoadMaterialDefault();
-  Texture2D tex = LoadTexture("./assets/grassblock.png");
-  mat.maps[MATERIAL_MAP_DIFFUSE].texture = tex;
+  mat.maps[MATERIAL_MAP_DIFFUSE].color = BLUE;
+  Material mat_ground = LoadMaterialDefault();
+  mat_ground.maps[MATERIAL_MAP_DIFFUSE].color = WHITE;
 
-  Shader shader = LoadShader("./assets/lighting.vs", "./assets/lighting.fs");
+  Shader shader =
+      LoadShader("./assets/lighting.vs", "./assets/lighting_new.fs");
   mat.shader = shader;
-
-  Model hammerModel = LoadModel("./assets/hammer.obj");
-  RigidBody rb2 =
-      CreateRB(&hammerModel.meshes[0], 2.0f, (Vector3){10.0f, 0.0f, 0.0f});
-  rb2.angularMomentum = (Vector3){100.0f, 0.1f, 0.0f};
-  hammerModel.materials[0].shader = shader;
 
   // shader uniforms setup
 
@@ -84,9 +85,15 @@ int main(void) {
   SetShaderValue(shader, GetShaderLocation(shader, "lightColor"), &lightVec,
                  SHADER_UNIFORM_VEC4);
 
-  int useTex = 1;
+  int useTex = 0;
   SetShaderValue(shader, GetShaderLocation(shader, "useTexture"), &useTex,
                  SHADER_UNIFORM_INT);
+
+  Model hammerModel = LoadModel("./assets/hammer.obj");
+  RigidBody rb2 =
+      CreateRB(&hammerModel.meshes[0], 2.0f, (Vector3){10.0f, 0.0f, 0.0f});
+  rb2.angularMomentum = (Vector3){150.0f, 0.5f, 0.5f};
+  hammerModel.materials[0].shader = shader;
 
   double timeAcc = 0.0f;
   Vector3 angVel = {0.f, 0.f, 0.f};
@@ -97,21 +104,29 @@ int main(void) {
     UpdateCamPos(&camera, &sphereCoords);
 
     // Update
+    ClearDebugContacts(); // at the beginning of the frame
     // avoid too long deltatimes:
     double H = 0.001f;
     timeAcc += GetFrameTime();
     while (timeAcc >= H) {
 
-      UpdateRB(&rb2, H);
+      //
+
+      UpdateRB(&rb2, H * simulationSpeed);
       for (int i = 0; i < RB_COUNT; i++) {
-        UpdateRB(&rbs[i], H);
+        UpdateRB(&rbs[i], H * simulationSpeed);
       }
       for (int i = 0; i < RB_COUNT; i++) {
         // check ground collision
-        HandleCuboidRBSBCollisions(&rbs[i], &ground, rb_dims, sb_dims);
+        HandleCuboidRBCollisions(&rbs[i], &ground, rb_dims, sb_dims);
         for (int j = i + 1; j < RB_COUNT; j++) {
           HandleCuboidRBCollisions(&rbs[i], &rbs[j], rb_dims, rb_dims);
         }
+      }
+      for (int i = 0; i < RB_COUNT; i++) {
+        rbs[i].linearVelocity.y -= 9.81 * H * simulationSpeed;
+        rbs[i].linearVelocity = Vector3Scale(rbs[i].linearVelocity, 0.999f);
+        rbs[i].angularMomentum = Vector3Scale(rbs[i].angularMomentum, 0.99f);
       }
 
       timeAcc -= H;
@@ -121,7 +136,6 @@ int main(void) {
 
     BeginDrawing();
     ClearBackground(GRAY);
-    DrawFPS(50, 50);
 
     BeginMode3D(camera);
     for (int i = 0; i < RB_COUNT; i++) {
@@ -132,24 +146,24 @@ int main(void) {
       DrawLine3D(rbs[i].position,
                  Vector3Add(rbs[i].position, rbs[i].linearVelocity), RED);
     }
-    DrawMesh(*ground.mesh, mat, ground.transform);
+    DrawMesh(*ground.mesh, mat_ground, ground.transform);
+    // hammer
     DrawMesh(*rb2.mesh, hammerModel.materials[0], rb2.transform);
     DrawLine3D(rb2.position, Vector3Add(rb2.position, rb2.angularMomentum),
                GREEN);
     DrawLine3D(rb2.position, Vector3Add(rb2.position, rb2.linearVelocity), RED);
 
-    // debug
-    // DrawCylinderEx(rb.position, Vector3Add(rb.position, rb.angularMomentum),
-    //                0.1f, 0.1f, 20, GREEN);
-    // DrawCylinderEx(rb.position, Vector3Add(rb.position, rb.linearVelocity),
-    //                0.1f, 0.1f, 20, RED);
-    //
-    // DrawCylinderEx(rb2.position, Vector3Add(rb2.position,
-    // rb2.angularMomentum),
-    //                0.1f, 0.1f, 20, GREEN);
-    // DrawCylinderEx(rb2.position, Vector3Add(rb2.position,
-    // rb2.linearVelocity),
-    //                0.1f, 0.1f, 20, RED);
+    // In draw loop:
+    const DebugContact *dcList = GetDebugContacts();
+    for (int i = 0; i < GetDebugContactCount(); i++) {
+      DebugContact dc = dcList[i];
+      DrawSphere(dc.position, 0.5f, RED);
+      // DrawLine3D(dc.position,
+      //            Vector3Add(dc.position, Vector3Scale(dc.normal, 1.0f)),
+      //            GREEN);
+      DrawCylinderEx(dc.position, Vector3Add(dc.position, dc.normal), 0.1f,
+                     0.1f, 20, GREEN);
+    }
 
     DrawCylinderEx((Vector3){0.0f, 0.0f, 0.0f}, (Vector3){5.0f, 0.0f, 0.0f},
                    0.05f, 0.05f, 20, RED);
@@ -161,6 +175,9 @@ int main(void) {
     DrawGrid(50, 1.0f);
 
     EndMode3D();
+    DrawFPS(50, 50);
+    GuiSliderBar((Rectangle){100.f, 50.f, 100.f, 50.f}, "simSpeed", "",
+                 &simulationSpeed, 0.0f, 1.0f);
     EndDrawing();
   }
 
