@@ -43,7 +43,7 @@ Vector3 ClosestPointOnOBB(Vector3 point, Vector3 center, Vector3 halfSize,
   // Transform point to OBB's local space
   Vector3 localPoint = Vector3Subtract(point, center);
 
-  // Get OBB axes
+  // Get OBB axes (normalized)
   Vector3 axisX = GetMatrixAxis(rotation, 0);
   Vector3 axisY = GetMatrixAxis(rotation, 1);
   Vector3 axisZ = GetMatrixAxis(rotation, 2);
@@ -90,12 +90,16 @@ void ProjectOBB(Vector3 center, Vector3 halfSize, Matrix rotation, Vector3 axis,
 bool TestSeparatingAxis(Vector3 p1, Vector3 s1, Matrix r1, Vector3 p2,
                         Vector3 s2, Matrix r2, Vector3 axis, float *minOverlap,
                         Vector3 *mtvAxis) {
-  // Normalize the axis
+  // Check if axis is degenerate (should be normalized before calling this
+  // function)
   float axisLength = Vector3Length(axis);
   if (axisLength < 1e-6f)
     return false; // Degenerate axis
 
-  axis = Vector3Scale(axis, 1.0f / axisLength);
+  // Ensure axis is normalized
+  if (fabsf(axisLength - 1.0f) > 1e-6f) {
+    axis = Vector3Scale(axis, 1.0f / axisLength);
+  }
 
   float min1, max1, min2, max2;
   ProjectOBB(p1, s1, r1, axis, &min1, &max1);
@@ -140,18 +144,22 @@ bool OBBvsOBB(Vector3 p1, Quaternion q1, Vector3 s1, Vector3 p2, Quaternion q2,
 
   // Test the 15 potential separating axes using SAT
 
-  // 1-3: Face normals of OBB1
+  // 1-3: Face normals of OBB1 (should already be normalized from rotation
+  // matrix)
   for (int i = 0; i < 3; i++) {
     Vector3 axis = GetMatrixAxis(r1, i);
+    axis = Vector3Normalize(axis); // Ensure normalization
     if (TestSeparatingAxis(p1, hs1, r1, p2, hs2, r2, axis, &minOverlap,
                            &mtvAxis)) {
       return false; // Separated
     }
   }
 
-  // 4-6: Face normals of OBB2
+  // 4-6: Face normals of OBB2 (should already be normalized from rotation
+  // matrix)
   for (int i = 0; i < 3; i++) {
     Vector3 axis = GetMatrixAxis(r2, i);
+    axis = Vector3Normalize(axis); // Ensure normalization
     if (TestSeparatingAxis(p1, hs1, r1, p2, hs2, r2, axis, &minOverlap,
                            &mtvAxis)) {
       return false; // Separated
@@ -165,8 +173,11 @@ bool OBBvsOBB(Vector3 p1, Quaternion q1, Vector3 s1, Vector3 p2, Quaternion q2,
       Vector3 axis2 = GetMatrixAxis(r2, j);
       Vector3 crossAxis = Vector3CrossProduct(axis1, axis2);
 
-      // Skip near-parallel axes
-      if (Vector3Length(crossAxis) > 1e-6f) {
+      // Skip near-parallel axes (when edges are nearly parallel)
+      float crossLength = Vector3Length(crossAxis);
+      if (crossLength > 1e-6f) {
+        // Normalize the cross axis
+        crossAxis = Vector3Scale(crossAxis, 1.0f / crossLength);
         if (TestSeparatingAxis(p1, hs1, r1, p2, hs2, r2, crossAxis, &minOverlap,
                                &mtvAxis)) {
           return false; // Separated
@@ -182,12 +193,22 @@ bool OBBvsOBB(Vector3 p1, Quaternion q1, Vector3 s1, Vector3 p2, Quaternion q2,
 
   // Calculate contact point if requested
   if (contactPoint_out) {
-    // Find the closest points between the two OBBs
-    Vector3 closest1 = ClosestPointOnOBB(p2, p1, hs1, r1);
-    Vector3 closest2 = ClosestPointOnOBB(p1, p2, hs2, r2);
+    // Use the MTV to determine which object's features are in contact
+    // Move along the MTV from the center of the penetrating object
+    Vector3 centerDiff = Vector3Subtract(p2, p1);
 
-    // The contact point is the midpoint between the closest points
-    *contactPoint_out = Vector3Scale(Vector3Add(closest1, closest2), 0.5f);
+    // If MTV points from A to B, then A is penetrating into B
+    if (Vector3DotProduct(mtvAxis, centerDiff) > 0) {
+      // A is penetrating into B, so contact point is on B's surface
+      Vector3 contactOnB =
+          Vector3Subtract(p2, Vector3Scale(mtvAxis, minOverlap * 0.5f));
+      *contactPoint_out = contactOnB;
+    } else {
+      // B is penetrating into A, so contact point is on A's surface
+      Vector3 contactOnA =
+          Vector3Add(p1, Vector3Scale(mtvAxis, minOverlap * 0.5f));
+      *contactPoint_out = contactOnA;
+    }
   }
 
   return true;
@@ -621,50 +642,51 @@ void ClaudeResolveCollision(RigidBody *rbA, RigidBody *rbB, Vector3 mtv,
   // Calculate correction based on mass ratio
   float totalInvMass = rbA->invMass + rbB->invMass;
 
-  float correctionPercent = 0.8f; // How much penetration to correct (80%)
-  float slop = 0.01f;             // Allow small penetration to avoid jitter
-  float correctionMagnitude =
-      fmaxf(penetration - slop, 0.0f) * correctionPercent / totalInvMass;
+  if (totalInvMass > 0.0f) {
+    float correctionPercent = 0.8f; // How much penetration to correct (80%)
+    float slop = 0.01f;             // Allow small penetration to avoid jitter
+    float correctionMagnitude =
+        fmaxf(penetration - slop, 0.0f) * correctionPercent / totalInvMass;
 
-  Vector3 correction = Vector3Scale(normal, correctionMagnitude);
+    Vector3 correction = Vector3Scale(normal, correctionMagnitude);
 
-  if (rbA->invMass > 0.0f) {
-    float ratioA = rbA->invMass / totalInvMass;
-    rbA->position =
-        Vector3Subtract(rbA->position, Vector3Scale(correction, ratioA));
-  }
-  if (rbB->invMass > 0.0f) {
-    float ratioB = rbB->invMass / totalInvMass;
-    rbB->position = Vector3Add(rbB->position, Vector3Scale(correction, ratioB));
+    if (rbA->invMass > 0.0f) {
+      float ratioA = rbA->invMass / totalInvMass;
+      rbA->position =
+          Vector3Subtract(rbA->position, Vector3Scale(correction, ratioA));
+    }
+    if (rbB->invMass > 0.0f) {
+      float ratioB = rbB->invMass / totalInvMass;
+      rbB->position =
+          Vector3Add(rbB->position, Vector3Scale(correction, ratioB));
+    }
   }
 
   // === STEP 2: IMPULSE RESOLUTION ===
 
   // Calculate relative velocity at contact point
-  Vector3 rA = Vector3Subtract(contactPoint,
-                               rbA->position); // Contact point relative to A
-  Vector3 rB = Vector3Subtract(contactPoint,
-                               rbB->position); // Contact point relative to B
+  Vector3 rA = Vector3Subtract(contactPoint, rbA->position);
+  Vector3 rB = Vector3Subtract(contactPoint, rbB->position);
 
   // Convert angular momentum to angular velocity for velocity calculations
   Vector3 angVelA =
-      rbA->invMass == 0.0f
+      (rbA->invMass == 0.0f)
           ? Vector3Zero()
           : ComputeAngularVelocity(rbA->invInertiaMatrix, rbA->rotation,
                                    rbA->angularMomentum);
   Vector3 angVelB =
-      rbB->invMass == 0.0f
+      (rbB->invMass == 0.0f)
           ? Vector3Zero()
           : ComputeAngularVelocity(rbB->invInertiaMatrix, rbB->rotation,
                                    rbB->angularMomentum);
 
   // Velocity at contact point = linear velocity + (angular velocity × radius)
   Vector3 velA =
-      rbA->invMass == 0.0f
+      (rbA->invMass == 0.0f)
           ? Vector3Zero()
           : Vector3Add(rbA->linearVelocity, Vector3CrossProduct(angVelA, rA));
   Vector3 velB =
-      rbB->invMass == 0.0f
+      (rbB->invMass == 0.0f)
           ? Vector3Zero()
           : Vector3Add(rbB->linearVelocity, Vector3CrossProduct(angVelB, rB));
 
@@ -678,29 +700,34 @@ void ClaudeResolveCollision(RigidBody *rbA, RigidBody *rbB, Vector3 mtv,
   // Calculate restitution (bounciness)
   float restitution = fminf(rbA->restitution, rbB->restitution);
 
-  // Calculate impulse scalar
+  // Calculate impulse scalar with proper rotational inertia handling
   float impulseScalar = -(1.0f + restitution) * velAlongNormal;
 
-  // Add rotational effects to impulse calculation
-  Vector3 rA_cross_n = Vector3CrossProduct(rA, normal);
-  Vector3 rB_cross_n = Vector3CrossProduct(rB, normal);
+  // Compute world-space inertia tensors for rotational effects
+  Matrix IinvAWorld =
+      (rbA->invMass == 0.0f)
+          ? MatrixIdentity()
+          : ComputeWorldInertia(Matrix3ToMatrix(rbA->invInertiaMatrix),
+                                rbA->rotation);
+  Matrix IinvBWorld =
+      (rbB->invMass == 0.0f)
+          ? MatrixIdentity()
+          : ComputeWorldInertia(Matrix3ToMatrix(rbB->invInertiaMatrix),
+                                rbB->rotation);
 
+  // Calculate rotational contribution to effective mass
   float rotationalEffect = 0.0f;
   if (rbA->invMass > 0.0f) {
-    Vector3 temp = Vector3CrossProduct(rA_cross_n, rA);
-    temp = MultiplyMatrixVector3(rbA->invInertiaMatrix, temp);
-    // temp = (Vector3){temp.x * rbA->invInertiaMatrix.m0,
-    //                  temp.y * rbA->invInertiaMatrix.m4,
-    //                  temp.z * rbA->invInertiaMatrix.m8};
-    rotationalEffect += Vector3DotProduct(temp, normal);
+    Vector3 rA_cross_n = Vector3CrossProduct(rA, normal);
+    Vector3 temp = Vector3Transform(rA_cross_n, IinvAWorld);
+    rotationalEffect +=
+        Vector3DotProduct(Vector3CrossProduct(temp, rA), normal);
   }
   if (rbB->invMass > 0.0f) {
-    Vector3 temp = Vector3CrossProduct(rB_cross_n, rB);
-    temp = MultiplyMatrixVector3(rbB->invInertiaMatrix, temp);
-    // temp = (Vector3){temp.x * rbB->invInertiaMatrix.m0,
-    //                  temp.y * rbB->invInertiaMatrix.m4,
-    //                  temp.z * rbB->invInertiaMatrix.m8};
-    rotationalEffect += Vector3DotProduct(temp, normal);
+    Vector3 rB_cross_n = Vector3CrossProduct(rB, normal);
+    Vector3 temp = Vector3Transform(rB_cross_n, IinvBWorld);
+    rotationalEffect +=
+        Vector3DotProduct(Vector3CrossProduct(temp, rB), normal);
   }
 
   impulseScalar /= totalInvMass + rotationalEffect;
@@ -709,18 +736,16 @@ void ClaudeResolveCollision(RigidBody *rbA, RigidBody *rbB, Vector3 mtv,
   // Apply linear impulses
   if (rbA->invMass > 0.0f) {
     rbA->linearVelocity = Vector3Subtract(rbA->linearVelocity,
-                                          Vector3Scale(impulse, rbB->invMass));
-    // Apply angular impulse by directly modifying angular momentum
-    // τ = r × F, and ΔL = τ * dt (for impulse, dt = 1)
+                                          Vector3Scale(impulse, rbA->invMass));
+    // Apply angular impulse to angular momentum
     Vector3 angularImpulse =
         Vector3CrossProduct(rA, Vector3Scale(impulse, -1.0f));
-
     rbA->angularMomentum = Vector3Add(rbA->angularMomentum, angularImpulse);
   }
   if (rbB->invMass > 0.0f) {
     rbB->linearVelocity =
         Vector3Add(rbB->linearVelocity, Vector3Scale(impulse, rbB->invMass));
-    // Apply angular impulse by directly modifying angular momentum
+    // Apply angular impulse to angular momentum
     Vector3 angularImpulse = Vector3CrossProduct(rB, impulse);
     rbB->angularMomentum = Vector3Add(rbB->angularMomentum, angularImpulse);
   }
@@ -728,21 +753,21 @@ void ClaudeResolveCollision(RigidBody *rbA, RigidBody *rbB, Vector3 mtv,
   // === STEP 3: FRICTION ===
 
   // Recalculate angular velocities and contact velocities after normal impulse
-  angVelA = rbA->invMass == 0.0f
+  angVelA = (rbA->invMass == 0.0f)
                 ? Vector3Zero()
                 : ComputeAngularVelocity(rbA->invInertiaMatrix, rbA->rotation,
                                          rbA->angularMomentum);
-  angVelB = rbB->invMass == 0.0f
+  angVelB = (rbB->invMass == 0.0f)
                 ? Vector3Zero()
                 : ComputeAngularVelocity(rbB->invInertiaMatrix, rbB->rotation,
                                          rbB->angularMomentum);
 
-  velA = rbA->invMass == 0.0f ? Vector3Zero()
-                              : Vector3Add(rbA->linearVelocity,
-                                           Vector3CrossProduct(angVelA, rA));
-  velB = rbB->invMass == 0.0f ? Vector3Zero()
-                              : Vector3Add(rbB->linearVelocity,
-                                           Vector3CrossProduct(angVelB, rB));
+  velA = (rbA->invMass == 0.0f) ? Vector3Zero()
+                                : Vector3Add(rbA->linearVelocity,
+                                             Vector3CrossProduct(angVelA, rA));
+  velB = (rbB->invMass == 0.0f) ? Vector3Zero()
+                                : Vector3Add(rbB->linearVelocity,
+                                             Vector3CrossProduct(angVelB, rB));
 
   relativeVel = Vector3Subtract(velB, velA);
 
@@ -750,20 +775,37 @@ void ClaudeResolveCollision(RigidBody *rbA, RigidBody *rbB, Vector3 mtv,
   Vector3 tangent = Vector3Subtract(
       relativeVel,
       Vector3Scale(normal, Vector3DotProduct(relativeVel, normal)));
+
   if (Vector3Length(tangent) > 1e-6f) {
     tangent = Vector3Normalize(tangent);
 
-    float friction = sqrtf(rbA->friction * rbB->friction); // Geometric mean
+    float friction = sqrtf(rbA->friction * rbB->friction);
+
+    // Calculate friction impulse with rotational effects
     float frictionImpulse = -Vector3DotProduct(relativeVel, tangent);
 
+    // Calculate rotational contribution to friction
+    float frictionRotationalEffect = 0.0f;
+    if (rbA->invMass > 0.0f) {
+      Vector3 rA_cross_t = Vector3CrossProduct(rA, tangent);
+      Vector3 temp = Vector3Transform(rA_cross_t, IinvAWorld);
+      frictionRotationalEffect +=
+          Vector3DotProduct(Vector3CrossProduct(temp, rA), tangent);
+    }
+    if (rbB->invMass > 0.0f) {
+      Vector3 rB_cross_t = Vector3CrossProduct(rB, tangent);
+      Vector3 temp = Vector3Transform(rB_cross_t, IinvBWorld);
+      frictionRotationalEffect +=
+          Vector3DotProduct(Vector3CrossProduct(temp, rB), tangent);
+    }
+
+    frictionImpulse /= totalInvMass + frictionRotationalEffect;
+
     // Coulomb friction model
-    if (fabsf(frictionImpulse) < impulseScalar * friction) {
-      // Static friction
-      frictionImpulse = frictionImpulse;
-    } else {
+    if (fabsf(frictionImpulse) > fabsf(impulseScalar) * friction) {
       // Kinetic friction
-      frictionImpulse =
-          -impulseScalar * friction * (frictionImpulse > 0 ? 1.0f : -1.0f);
+      frictionImpulse = -fabsf(impulseScalar) * friction *
+                        (frictionImpulse > 0 ? 1.0f : -1.0f);
     }
 
     Vector3 frictionVector = Vector3Scale(tangent, frictionImpulse);
@@ -772,29 +814,20 @@ void ClaudeResolveCollision(RigidBody *rbA, RigidBody *rbB, Vector3 mtv,
     if (rbA->invMass > 0.0f) {
       rbA->linearVelocity = Vector3Subtract(
           rbA->linearVelocity, Vector3Scale(frictionVector, rbA->invMass));
-      // Apply friction angular impulse to angular momentum
       Vector3 angularFriction =
           Vector3CrossProduct(rA, Vector3Scale(frictionVector, -1.0f));
-      // NOTE
-      //  rbA->angularMomentum = Vector3Add(rbA->angularMomentum,
-      //  angularFriction);
+      rbA->angularMomentum = Vector3Add(rbA->angularMomentum, angularFriction);
     }
     if (rbB->invMass > 0.0f) {
       rbB->linearVelocity = Vector3Add(
           rbB->linearVelocity, Vector3Scale(frictionVector, rbB->invMass));
-      // Apply friction angular impulse to angular momentum
       Vector3 angularFriction = Vector3CrossProduct(rB, frictionVector);
-      // NOTE
-      //  rbB->angularMomentum = Vector3Add(rbB->angularMomentum,
-      //  angularFriction);
+      rbB->angularMomentum = Vector3Add(rbB->angularMomentum, angularFriction);
     }
   }
-
-  // Optional: Debug output
-  printf("Collision: %d, Impulse: %.2f, Contact: (%.2f,%.2f,%.2f)\n",
-         collisionCount, impulseScalar, contactPoint.x, contactPoint.y,
-         contactPoint.z);
 }
+
+typedef enum CollisionType { EdgeEdge = 0, VertexFace, FaceFace } CollisionType;
 
 void HandleCuboidRBCollisions(RigidBody *a, RigidBody *b, Vector3 aDims,
                               Vector3 bDims) {
@@ -802,23 +835,19 @@ void HandleCuboidRBCollisions(RigidBody *a, RigidBody *b, Vector3 aDims,
   Vector3 mtv;
   Vector3 contactPoint;
   if (OBBvsOBB(a->position, a->rotation, aDims, b->position, b->rotation, bDims,
-               &mtv, &contactPoint)) {
+               &mtv, NULL)) {
     collisionCount++;
+    // check what type of collision it is:
 
     // printf("COLLISION FOUND, COUNT: %d\n", collisionCount);
     float penetration = Vector3Length(mtv);
     Vector3 normal = Vector3Normalize(mtv);
 
-    // In collision code:
-    PushDebugContact(contactPoint, normal, penetration);
     const float slop = 0.0001f;
     if (penetration > slop) {
-      // Resolve position
-      Vector3 correction = Vector3Scale(normal, (penetration - slop) * 0.5f);
-      // a->position = Vector3Subtract(a->position, correction);
-      // b->position = Vector3Add(b->position, correction);
-      // Resolve velocity
-      // ApplyImpulse(a, b, contactPoint, normal, penetration);
+      PushDebugContact(contactPoint, normal, penetration);
+      printf("contactPoint: (%f, %f, %f)\n", contactPoint.x, contactPoint.y,
+             contactPoint.z);
       ClaudeResolveCollision(a, b, mtv, contactPoint);
     }
   }

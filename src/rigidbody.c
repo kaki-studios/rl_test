@@ -222,7 +222,7 @@ Vector3 ComputeAngularVelocity(Matrix3 invInertiaMatrix, Quaternion rot,
   Matrix R = QuaternionToMatrix(rot);
   Matrix3 Rt = StripMatrixToMatrix3(MatrixTranspose(R));
   Matrix3 I_inv_world =
-      Matrix3Mult(Matrix3Mult(StripMatrixToMatrix3(R), invInertiaMatrix), Rt);
+      Matrix3Mult(StripMatrixToMatrix3(R), Matrix3Mult(invInertiaMatrix, Rt));
   return MultiplyMatrixVector3(I_inv_world, angMomentum);
   // // Step 1: Rotate angular momentum into local space
   // Vector3 localAngMom = Vector3RotateByQuaternion(angMomentum, invRot);

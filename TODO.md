@@ -1,0 +1,2 @@
+- [ ] Better collision detection, remember deepseek_phys directory
+- [ ] Refactor some of the code, e.g seperate helpers file and boundingBox added as a field to RigidBody

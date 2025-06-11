@@ -9,6 +9,9 @@
 #include "raygui.h"
 
 #define CAMERA_RADIUS 15.0f
+#define LINEAR_DAMPING 0.1f
+#define ANGULAR_DAMPING 0.0f
+
 #define RB_COUNT 2
 #if defined(PLATFORM_DESKTOP)
 #define GLSL_VERSION 330
@@ -25,7 +28,7 @@ int main(void) {
   const int width = 800;
   const int height = 400;
   InitWindow(width, height, "Raylib Test");
-  SetTargetFPS(60);
+  SetTargetFPS(144);
   // camera setup, rn just orbits center
   Camera3D camera = {0};
   Vector2 sphereCoords = {PI / 2, 0.25f};
@@ -44,12 +47,12 @@ int main(void) {
 
   rbs[0] = CreateCuboidRB(2.0f, (Vector3){0.0f, 5.0f, 0.0f}, rb_dims);
   rbs[0].angularMomentum = (Vector3){150.0f, 0.1f, 0.1f};
-  rbs[0].linearVelocity = (Vector3){-3.0f, -1.0f, 0.0f};
+  rbs[0].linearVelocity = (Vector3){-3.0f, -10.0f, 0.0f};
 
   rbs[1] = CreateCuboidRB(2.0f, (Vector3){-20.0f, 5.0f, 0.0f}, rb_dims);
 
   rbs[1].angularMomentum = (Vector3){100.f, 0.1f, 0.1f};
-  rbs[1].linearVelocity = (Vector3){3.0f, -1.0f, 0.0f};
+  rbs[1].linearVelocity = (Vector3){30.0f, -10.0f, 0.0f};
 
   Material mat = LoadMaterialDefault();
   mat.maps[MATERIAL_MAP_DIFFUSE].color = BLUE;
@@ -124,9 +127,11 @@ int main(void) {
         }
       }
       for (int i = 0; i < RB_COUNT; i++) {
-        rbs[i].linearVelocity.y -= 9.81 * H * simulationSpeed;
-        rbs[i].linearVelocity = Vector3Scale(rbs[i].linearVelocity, 0.999f);
-        rbs[i].angularMomentum = Vector3Scale(rbs[i].angularMomentum, 0.99f);
+        // rbs[i].linearVelocity.y -= 9.81 * H * simulationSpeed;
+        rbs[i].linearVelocity = Vector3Scale(
+            rbs[i].linearVelocity, 1 - LINEAR_DAMPING * H * simulationSpeed);
+        rbs[i].angularMomentum = Vector3Scale(
+            rbs[i].angularMomentum, 1 - ANGULAR_DAMPING * H * simulationSpeed);
       }
 
       timeAcc -= H;
