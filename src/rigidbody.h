@@ -36,6 +36,8 @@ Matrix Matrix3ToMatrix(Matrix3);
 Matrix3 StripMatrixToMatrix3(Matrix);
 Matrix ComputeWorldInertia(Matrix, Quaternion);
 
+Matrix3 InverseMatrix3(Matrix3);
+
 Vector3 MultiplyMatrixVector3(Matrix3, Vector3);
 
 Vector3 ComputeAngularVelocity(Matrix3, Quaternion, Vector3);

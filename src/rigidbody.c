@@ -219,10 +219,13 @@ void ApplyLinearVelocity(Vector3 *pos, Vector3 linearVelocity,
 
 Vector3 ComputeAngularVelocity(Matrix3 invInertiaMatrix, Quaternion rot,
                                Vector3 angMomentum) {
-  Matrix R = QuaternionToMatrix(rot);
-  Matrix3 Rt = StripMatrixToMatrix3(MatrixTranspose(R));
-  Matrix3 I_inv_world =
-      Matrix3Mult(StripMatrixToMatrix3(R), Matrix3Mult(invInertiaMatrix, Rt));
+  // Matrix R = QuaternionToMatrix(rot);
+  // Matrix3 Rt = StripMatrixToMatrix3(MatrixTranspose(R));
+  // Matrix3 I_inv_world =
+  //     Matrix3Mult(StripMatrixToMatrix3(R), Matrix3Mult(invInertiaMatrix,
+  //     Rt));
+  Matrix3 I_inv_world = StripMatrixToMatrix3(
+      ComputeWorldInertia(Matrix3ToMatrix(invInertiaMatrix), rot));
   return MultiplyMatrixVector3(I_inv_world, angMomentum);
   // // Step 1: Rotate angular momentum into local space
   // Vector3 localAngMom = Vector3RotateByQuaternion(angMomentum, invRot);

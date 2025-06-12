@@ -9,8 +9,8 @@
 #include "raygui.h"
 
 #define CAMERA_RADIUS 15.0f
-#define LINEAR_DAMPING 2.0f
-#define ANGULAR_DAMPING 1.0f
+#define LINEAR_DAMPING 0.2f
+#define ANGULAR_DAMPING 0.5f
 
 #define RB_COUNT 2
 #if defined(PLATFORM_DESKTOP)
@@ -46,12 +46,12 @@ int main(void) {
                                     QuaternionIdentity(), sb_dims);
 
   rbs[0] = CreateCuboidRB(2.0f, (Vector3){0.0f, 5.0f, 0.0f}, rb_dims);
-  // rbs[0].angularMomentum = (Vector3){150.0f, 0.1f, 0.1f};
-  rbs[0].linearVelocity = (Vector3){-3.0f, -10.0f, 0.0f};
+  rbs[0].angularMomentum = (Vector3){15.0f, 0.1f, 0.1f};
+  rbs[0].linearVelocity = (Vector3){-30.0f, -10.0f, 0.0f};
 
   rbs[1] = CreateCuboidRB(2.0f, (Vector3){-20.0f, 5.0f, 0.0f}, rb_dims);
 
-  rbs[1].angularMomentum = (Vector3){100.f, 0.1f, 0.1f};
+  rbs[1].angularMomentum = (Vector3){10.f, 0.1f, 0.1f};
   rbs[1].linearVelocity = (Vector3){30.0f, -10.0f, 0.0f};
 
   Material mat = LoadMaterialDefault();

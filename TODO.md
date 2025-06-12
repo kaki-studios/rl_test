@@ -1,2 +1,3 @@
-- [ ] Better collision detection, remember deepseek_phys directory
+- [X] Better collision detection, remember deepseek_phys directory
 - [ ] Refactor some of the code, e.g seperate helpers file and boundingBox added as a field to RigidBody
+- [ ] Implement forces and torques + clear up momentum implementations

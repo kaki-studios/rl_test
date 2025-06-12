@@ -69,7 +69,7 @@ void ResolveCollision(RigidBody *a, RigidBody *b, CollisionInfo info) {
       a->position, Vector3Scale(info.normal, info.penetrationDepth *
                                                  (a->invMass / totalMass)));
 
-  b->position = Vector3Subtract(
+  b->position = Vector3Add(
       b->position, Vector3Scale(info.normal, info.penetrationDepth *
                                                  (b->invMass / totalMass)));
   Vector3 relativeA = Vector3Subtract(info.location, a->position);
@@ -95,15 +95,19 @@ void ResolveCollision(RigidBody *a, RigidBody *b, CollisionInfo info) {
       ComputeWorldInertia(Matrix3ToMatrix(b->invInertiaMatrix), b->rotation));
 
   Vector3 inertiaA = Vector3CrossProduct(
-      MultiplyMatrixVector3(Ainv, Vector3CrossProduct(relativeA, info.normal)),
+      MultiplyMatrixVector3(InverseMatrix3(Ainv),
+                            Vector3CrossProduct(relativeA, info.normal)),
       relativeA);
-
   Vector3 inertiaB = Vector3CrossProduct(
-      MultiplyMatrixVector3(Binv, Vector3CrossProduct(relativeB, info.normal)),
+      MultiplyMatrixVector3(InverseMatrix3(Binv),
+                            Vector3CrossProduct(relativeB, info.normal)),
       relativeB);
+
   float angularEffect =
-      Vector3DotProduct(Vector3Add(inertiaA, inertiaB), info.normal);
-  float cRestitution = (a->restitution + b->restitution) * 0.5f;
+      Vector3DotProduct(Vector3Add(inertiaA, inertiaB), info.normal) * 0.5;
+  // float cRestitution = (a->restitution + b->restitution) * 0.5f;
+  float cRestitution = a->restitution * b->restitution;
+  // cRestitution = 0.66f;
 
   float j =
       (-(1.0f + cRestitution) * impulseForce) / (totalMass + angularEffect);
@@ -120,7 +124,7 @@ void ResolveCollision(RigidBody *a, RigidBody *b, CollisionInfo info) {
                  Vector3CrossProduct(relativeA, Vector3Negate(fullImpulse)));
 
   b->angularMomentum = Vector3Add(b->angularMomentum,
-                                  Vector3CrossProduct(relativeA, fullImpulse));
+                                  Vector3CrossProduct(relativeB, fullImpulse));
 }
 
 void ClaudeResolveCollision(RigidBody *rbA, RigidBody *rbB, Vector3 mtv,
