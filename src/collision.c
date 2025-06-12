@@ -4,11 +4,31 @@
 #include <float.h>
 #include <raylib.h>
 #include <raymath.h>
-#include <stdio.h>
 
 #define MAX_DEBUG_CONTACTS 128
 static DebugContact debugContacts[MAX_DEBUG_CONTACTS];
 static int debugContactCount = 0;
+
+typedef struct {
+  Vector3 position;
+  Quaternion orientation;
+  Vector3 halfExtents;
+} OBB;
+OBB CuboidToObb(Vector3 pos, Quaternion rot, Vector3 dims) {
+  return (OBB){
+      .position = pos,
+      .orientation = rot,
+      .halfExtents = Vector3Scale(dims, 0.5f),
+  };
+}
+
+typedef struct {
+  bool isColliding;
+  Vector3 location;
+  Vector3 mtv;
+  float penetrationDepth;
+  Vector3 normal;
+} CollisionInfo;
 
 void ClearDebugContacts(void) { debugContactCount = 0; }
 
@@ -37,597 +57,72 @@ Vector3 GetMatrixAxis(Matrix m, int axis) {
   }
 }
 
-// Helper function to find the closest point on an OBB to a given point
-Vector3 ClosestPointOnOBB(Vector3 point, Vector3 center, Vector3 halfSize,
-                          Matrix rotation) {
-  // Transform point to OBB's local space
-  Vector3 localPoint = Vector3Subtract(point, center);
-
-  // Get OBB axes (normalized)
-  Vector3 axisX = GetMatrixAxis(rotation, 0);
-  Vector3 axisY = GetMatrixAxis(rotation, 1);
-  Vector3 axisZ = GetMatrixAxis(rotation, 2);
-
-  // Project point onto each axis and clamp to half-extents
-  float projX = Vector3DotProduct(localPoint, axisX);
-  float projY = Vector3DotProduct(localPoint, axisY);
-  float projZ = Vector3DotProduct(localPoint, axisZ);
-
-  projX = Clamp(projX, -halfSize.x, halfSize.x);
-  projY = Clamp(projY, -halfSize.y, halfSize.y);
-  projZ = Clamp(projZ, -halfSize.z, halfSize.z);
-
-  // Transform back to world space
-  Vector3 closestPoint = center;
-  closestPoint = Vector3Add(closestPoint, Vector3Scale(axisX, projX));
-  closestPoint = Vector3Add(closestPoint, Vector3Scale(axisY, projY));
-  closestPoint = Vector3Add(closestPoint, Vector3Scale(axisZ, projZ));
-
-  return closestPoint;
-}
-
-// Project OBB onto an axis and return min/max projection values
-void ProjectOBB(Vector3 center, Vector3 halfSize, Matrix rotation, Vector3 axis,
-                float *min, float *max) {
-  // Get the three axes of the OBB
-  Vector3 axisX = GetMatrixAxis(rotation, 0);
-  Vector3 axisY = GetMatrixAxis(rotation, 1);
-  Vector3 axisZ = GetMatrixAxis(rotation, 2);
-
-  // Project center onto axis
-  float centerProjection = Vector3DotProduct(center, axis);
-
-  // Calculate the projection of the half-extents onto the axis
-  float extent = fabsf(Vector3DotProduct(axisX, axis)) * halfSize.x +
-                 fabsf(Vector3DotProduct(axisY, axis)) * halfSize.y +
-                 fabsf(Vector3DotProduct(axisZ, axis)) * halfSize.z;
-
-  *min = centerProjection - extent;
-  *max = centerProjection + extent;
-}
-
-// Test separation along an axis and update MTV if needed
-bool TestSeparatingAxis(Vector3 p1, Vector3 s1, Matrix r1, Vector3 p2,
-                        Vector3 s2, Matrix r2, Vector3 axis, float *minOverlap,
-                        Vector3 *mtvAxis) {
-  // Check if axis is degenerate (should be normalized before calling this
-  // function)
-  float axisLength = Vector3Length(axis);
-  if (axisLength < 1e-6f)
-    return false; // Degenerate axis
-
-  // Ensure axis is normalized
-  if (fabsf(axisLength - 1.0f) > 1e-6f) {
-    axis = Vector3Scale(axis, 1.0f / axisLength);
-  }
-
-  float min1, max1, min2, max2;
-  ProjectOBB(p1, s1, r1, axis, &min1, &max1);
-  ProjectOBB(p2, s2, r2, axis, &min2, &max2);
-
-  // Check for separation
-  if (max1 < min2 || max2 < min1) {
-    return true; // Separated
-  }
-
-  // Calculate overlap
-  float overlap = fminf(max1, max2) - fmaxf(min1, min2);
-
-  // Update MTV if this is the smallest overlap so far
-  if (overlap < *minOverlap) {
-    *minOverlap = overlap;
-    *mtvAxis = axis;
-
-    // Ensure MTV points from OBB1 to OBB2
-    Vector3 centerDiff = Vector3Subtract(p2, p1);
-    if (Vector3DotProduct(centerDiff, axis) < 0) {
-      *mtvAxis = Vector3Scale(axis, -1.0f);
-    }
-  }
-
-  return false; // Not separated
-}
-
-bool OBBvsOBB(Vector3 p1, Quaternion q1, Vector3 s1, Vector3 p2, Quaternion q2,
-              Vector3 s2, Vector3 *mtv_out, Vector3 *contactPoint_out) {
-  // Convert quaternions to rotation matrices
-  Matrix r1 = QuaternionToMatrix(q1);
-  Matrix r2 = QuaternionToMatrix(q2);
-
-  // Half-sizes for easier calculations
-  Vector3 hs1 = Vector3Scale(s1, 0.5f);
-  Vector3 hs2 = Vector3Scale(s2, 0.5f);
-
-  // Track minimum overlap and MTV
-  float minOverlap = FLT_MAX;
-  Vector3 mtvAxis = {1, 0, 0};
-
-  // Test the 15 potential separating axes using SAT
-
-  // 1-3: Face normals of OBB1 (should already be normalized from rotation
-  // matrix)
-  for (int i = 0; i < 3; i++) {
-    Vector3 axis = GetMatrixAxis(r1, i);
-    axis = Vector3Normalize(axis); // Ensure normalization
-    if (TestSeparatingAxis(p1, hs1, r1, p2, hs2, r2, axis, &minOverlap,
-                           &mtvAxis)) {
-      return false; // Separated
-    }
-  }
-
-  // 4-6: Face normals of OBB2 (should already be normalized from rotation
-  // matrix)
-  for (int i = 0; i < 3; i++) {
-    Vector3 axis = GetMatrixAxis(r2, i);
-    axis = Vector3Normalize(axis); // Ensure normalization
-    if (TestSeparatingAxis(p1, hs1, r1, p2, hs2, r2, axis, &minOverlap,
-                           &mtvAxis)) {
-      return false; // Separated
-    }
-  }
-
-  // 7-15: Cross products of edge directions
-  for (int i = 0; i < 3; i++) {
-    Vector3 axis1 = GetMatrixAxis(r1, i);
-    for (int j = 0; j < 3; j++) {
-      Vector3 axis2 = GetMatrixAxis(r2, j);
-      Vector3 crossAxis = Vector3CrossProduct(axis1, axis2);
-
-      // Skip near-parallel axes (when edges are nearly parallel)
-      float crossLength = Vector3Length(crossAxis);
-      if (crossLength > 1e-6f) {
-        // Normalize the cross axis
-        crossAxis = Vector3Scale(crossAxis, 1.0f / crossLength);
-        if (TestSeparatingAxis(p1, hs1, r1, p2, hs2, r2, crossAxis, &minOverlap,
-                               &mtvAxis)) {
-          return false; // Separated
-        }
-      }
-    }
-  }
-
-  // No separating axis found - collision detected
-  if (mtv_out) {
-    *mtv_out = Vector3Scale(mtvAxis, minOverlap);
-  }
-
-  // Calculate contact point if requested
-  if (contactPoint_out) {
-    // Use the MTV to determine which object's features are in contact
-    // Move along the MTV from the center of the penetrating object
-    Vector3 centerDiff = Vector3Subtract(p2, p1);
-
-    // If MTV points from A to B, then A is penetrating into B
-    if (Vector3DotProduct(mtvAxis, centerDiff) > 0) {
-      // A is penetrating into B, so contact point is on B's surface
-      Vector3 contactOnB =
-          Vector3Subtract(p2, Vector3Scale(mtvAxis, minOverlap * 0.5f));
-      *contactPoint_out = contactOnB;
-    } else {
-      // B is penetrating into A, so contact point is on A's surface
-      Vector3 contactOnA =
-          Vector3Add(p1, Vector3Scale(mtvAxis, minOverlap * 0.5f));
-      *contactPoint_out = contactOnA;
-    }
-  }
-
-  return true;
-}
-
-void ApplyImpulseCuboidRBNew(RigidBody *rbA, RigidBody *rbB, Vector3 mtv,
-                             Vector3 contactPoint, Vector3 aDims,
-                             Vector3 bDims) {
-  Vector3 normal = Vector3Normalize(mtv);
-  float penetration = Vector3Length(mtv);
-
-  float totalInvMass = rbA->invMass + rbB->invMass;
-  Matrix IinvAWorld = ComputeWorldInertia(
-      Matrix3ToMatrix(rbA->invInertiaMatrix), rbA->rotation);
-
-  Matrix IinvBWorld = ComputeWorldInertia(
-      Matrix3ToMatrix(rbB->invInertiaMatrix), rbB->rotation);
-
-  if (totalInvMass > 0.0f) {
-    float correctionPercent = 0.2f; // How much penetration to correct (80%)
-    float slop = 0.001f;            // Allow small penetration to avoid jitter
-    float correctionMagnitude =
-        fmaxf(penetration - slop, 0.0f) * correctionPercent / totalInvMass;
-
-    Vector3 correction = Vector3Scale(normal, correctionMagnitude);
-
-    if (rbA->invMass != 0.0f) {
-
-      float ratioA = rbA->invMass / totalInvMass;
-      rbA->position =
-          Vector3Subtract(rbA->position, Vector3Scale(correction, ratioA));
-    }
-    if (rbB->invMass != 0.0f) {
-
-      float ratioB = rbB->invMass / totalInvMass;
-      rbB->position =
-          Vector3Add(rbB->position, Vector3Scale(correction, ratioB));
-    }
-  }
-
-  rbA->linearVelocity = Vector3Add(
-      rbA->linearVelocity, Vector3Scale(mtv, rbA->invMass / totalInvMass));
-
-  Vector3 rA = Vector3Subtract(contactPoint, rbA->position);
-  Vector3 rACrossNb = Vector3CrossProduct(rA, normal);
-  Vector3 angAddA =
-      MultiplyMatrixVector3(StripMatrixToMatrix3(IinvAWorld), rACrossNb);
-  printf("angaddmag %f\n", Vector3LengthSqr(angAddA));
-  rbA->angularMomentum = Vector3Add(rbA->angularMomentum, angAddA);
-
-  // same for B
-  rbB->linearVelocity = Vector3Add(
-      rbB->linearVelocity, Vector3Scale(mtv, rbB->invMass / totalInvMass));
-
-  Vector3 rB = Vector3Subtract(contactPoint, rbB->position);
-  Vector3 rBCrossNb = Vector3CrossProduct(rB, normal);
-  Vector3 angAddB =
-      MultiplyMatrixVector3(StripMatrixToMatrix3(IinvBWorld), rBCrossNb);
-  rbB->angularMomentum = Vector3Add(rbB->angularMomentum, angAddB);
-}
-
-void ApplyImpulseCuboidRB(RigidBody *rbA, RigidBody *rbB, Vector3 mtv,
-                          Vector3 contactPoint, Vector3 aDims, Vector3 bDims) {
-
-  // === STEP 1: POSITIONAL CORRECTION (SEPARATION) ===
-  Vector3 normal = Vector3Normalize(mtv);
-  float penetration = Vector3Length(mtv);
-
-  // Get inertia properties
-  // Matrix3 Ia_inv = CuboidComputeInvInertiaMatrix(aDims, rbA->density);
-  Matrix3 Ia_inv = rbA->invInertiaMatrix;
-
-  // Matrix3 Ib_inv = CuboidComputeInvInertiaMatrix(bDims, rbB->density);
-  Matrix3 Ib_inv = rbB->invInertiaMatrix;
-
-  // Calculate correction based on mass ratio
-  float totalInvMass = rbA->invMass + rbB->invMass;
-
-  if (totalInvMass > 0.0f) {
-    float correctionPercent = 1.0f; // How much penetration to correct (80%)
-    float slop = 0.01f;             // Allow small penetration to avoid jitter
-    float correctionMagnitude =
-        fmaxf(penetration - slop, 0.0f) * correctionPercent / totalInvMass;
-
-    Vector3 correction = Vector3Scale(normal, correctionMagnitude);
-
-    float ratioA = rbA->invMass / totalInvMass;
-    rbA->position =
-        Vector3Subtract(rbA->position, Vector3Scale(correction, ratioA));
-    float ratioB = rbB->invMass / totalInvMass;
-    rbB->position = Vector3Add(rbB->position, Vector3Scale(correction, ratioB));
-  }
-
-  // === STEP 2: IMPULSE RESOLUTION ===
-
-  // Calculate relative velocity at contact point
-  Vector3 rA = Vector3Subtract(contactPoint,
-                               rbA->position); // Contact point relative to A
-  Vector3 rB = Vector3Subtract(contactPoint,
-                               rbB->position); // Contact point relative to B
-  Vector3 wA =
-      ComputeAngularVelocity(Ia_inv, rbA->rotation, rbA->angularMomentum);
-  Vector3 wB =
-      ComputeAngularVelocity(Ib_inv, rbB->rotation, rbB->angularMomentum);
-
-  // Velocity at contact point = linear velocity + (angular velocity × radius)
-  Vector3 velA = Vector3Add(rbA->linearVelocity, Vector3CrossProduct(wA, rA));
-  Vector3 velB = Vector3Add(rbB->linearVelocity, Vector3CrossProduct(wA, rB));
-
-  Vector3 relativeVel = Vector3Subtract(velB, velA);
-  float velAlongNormal = Vector3DotProduct(relativeVel, normal);
-
-  // Don't resolve if objects are separating
-  if (velAlongNormal > 0)
+// source:
+// https://research.ncl.ac.uk/game/mastersdegree/gametechnologies/physicstutorials/5collisionresponse/Physics%20-%20Collision%20Response.pdf
+void ResolveCollision(RigidBody *a, RigidBody *b, CollisionInfo info) {
+  float totalMass = a->invMass + b->invMass;
+  if (totalMass == 0.0f) {
     return;
-
-  // Calculate restitution (bounciness)
-  float restitution = fminf(rbA->restitution, rbB->restitution);
-
-  // Calculate impulse scalar
-  // float impulseScalar = -(1.0f + restitution) * velAlongNormal;
-  float impulseScalar = -(restitution)*velAlongNormal;
-
-  // Add rotational effects to impulse calculation
-  Vector3 rA_cross_n = Vector3CrossProduct(rA, normal);
-  Vector3 rB_cross_n = Vector3CrossProduct(rB, normal);
-
-  float rotationalEffect = 0.0f;
-  Vector3 temp = Vector3CrossProduct(rA_cross_n, rA);
-  temp = (Vector3){temp.x * Ia_inv.m0, temp.y * Ia_inv.m4, temp.z * Ia_inv.m8};
-  rotationalEffect += Vector3DotProduct(temp, normal);
-
-  Vector3 tempB = Vector3CrossProduct(rB_cross_n, rB);
-  tempB = (Vector3){temp.x * Ib_inv.m0, temp.y * Ib_inv.m4, temp.z * Ib_inv.m8};
-  rotationalEffect += Vector3DotProduct(tempB, normal);
-
-  impulseScalar /= totalInvMass + rotationalEffect;
-  Vector3 impulse = Vector3Scale(normal, impulseScalar);
-
-  // Apply linear impulses
-  rbA->linearVelocity =
-      Vector3Subtract(rbA->linearVelocity, Vector3Scale(impulse, rbA->invMass));
-  Vector3 angularImpulse =
-      Vector3CrossProduct(rA, Vector3Scale(impulse, -1.0f));
-  rbA->angularMomentum = Vector3Add(rbA->angularMomentum, angularImpulse);
-
-  rbB->linearVelocity =
-      Vector3Add(rbB->linearVelocity, Vector3Scale(impulse, rbB->invMass));
-  Vector3 angularImpulseB = Vector3CrossProduct(rB, impulse);
-  rbB->angularMomentum = Vector3Add(rbB->angularMomentum, angularImpulseB);
-
-  // === STEP 3: FRICTION ===
-
-  // Recalculate relative velocity after normal impulse
-
-  wA = ComputeAngularVelocity(rbA->invInertiaMatrix, rbA->rotation,
-                              rbA->angularMomentum);
-
-  wB = ComputeAngularVelocity(rbB->invInertiaMatrix, rbB->rotation,
-                              rbB->angularMomentum);
-  velA = Vector3Add(rbA->linearVelocity, Vector3CrossProduct(wA, rA));
-  velB = Vector3Add(rbB->linearVelocity, Vector3CrossProduct(wB, rB));
-
-  relativeVel = Vector3Subtract(velB, velA);
-
-  // Calculate tangent vector (friction direction)
-  Vector3 tangent = Vector3Subtract(
-      relativeVel,
-      Vector3Scale(normal, Vector3DotProduct(relativeVel, normal)));
-  if (Vector3Length(tangent) > 1e-6f) {
-    tangent = Vector3Normalize(tangent);
-
-    float friction = sqrtf(rbA->friction * rbB->friction); // Geometric mean
-    float frictionImpulse = -Vector3DotProduct(relativeVel, tangent);
-
-    // Coulomb friction model
-    if (fabsf(frictionImpulse) < impulseScalar * friction) {
-      // Static friction
-      frictionImpulse = frictionImpulse;
-    } else {
-      // Kinetic friction
-      frictionImpulse =
-          -impulseScalar * friction * (frictionImpulse > 0 ? 1.0f : -1.0f);
-    }
-
-    Vector3 frictionVector = Vector3Scale(tangent, frictionImpulse);
-
-    // Apply friction impulses
-    rbA->linearVelocity = Vector3Subtract(
-        rbA->linearVelocity, Vector3Scale(frictionVector, rbA->invMass));
-    Vector3 angularFriction =
-        Vector3CrossProduct(rA, Vector3Scale(frictionVector, -1.0f));
-    rbA->angularMomentum = Vector3Add(rbA->angularMomentum, angularFriction);
-
-    rbB->linearVelocity = Vector3Add(
-        rbB->linearVelocity, Vector3Scale(frictionVector, rbB->invMass));
-    Vector3 angularFrictionB = Vector3CrossProduct(rB, frictionVector);
-    rbB->angularMomentum = Vector3Add(rbB->angularMomentum, angularFrictionB);
   }
+  // Seperate positions
+  a->position = Vector3Subtract(
+      a->position, Vector3Scale(info.normal, info.penetrationDepth *
+                                                 (a->invMass / totalMass)));
 
-  // Optional: Debug output
-  printf("Collision: %d, Impulse: %.2f, Contact: (%.2f,%.2f,%.2f)\n",
-         collisionCount, impulseScalar, contactPoint.x, contactPoint.y,
-         contactPoint.z);
+  b->position = Vector3Subtract(
+      b->position, Vector3Scale(info.normal, info.penetrationDepth *
+                                                 (b->invMass / totalMass)));
+  Vector3 relativeA = Vector3Subtract(info.location, a->position);
+  Vector3 relativeB = Vector3Subtract(info.location, b->position);
+  // need to compute these, angVelA and angVelB are intermediaries
+  Vector3 angVelA = ComputeAngularVelocity(a->invInertiaMatrix, a->rotation,
+                                           a->angularMomentum);
+  Vector3 angVelB = ComputeAngularVelocity(b->invInertiaMatrix, b->rotation,
+                                           b->angularMomentum);
+  Vector3 angVelocityA = Vector3CrossProduct(angVelA, relativeA);
+  Vector3 angVelocityB = Vector3CrossProduct(angVelB, relativeB);
+
+  Vector3 fullVelocityA = Vector3Add(a->linearVelocity, angVelocityA);
+  Vector3 fullVelocityB = Vector3Add(b->linearVelocity, angVelocityB);
+
+  Vector3 contactVelocity = Vector3Subtract(fullVelocityB, fullVelocityA);
+  float impulseForce = Vector3DotProduct(contactVelocity, info.normal);
+
+  // intermediaries
+  Matrix3 Ainv = StripMatrixToMatrix3(
+      ComputeWorldInertia(Matrix3ToMatrix(a->invInertiaMatrix), a->rotation));
+  Matrix3 Binv = StripMatrixToMatrix3(
+      ComputeWorldInertia(Matrix3ToMatrix(b->invInertiaMatrix), b->rotation));
+
+  Vector3 inertiaA = Vector3CrossProduct(
+      MultiplyMatrixVector3(Ainv, Vector3CrossProduct(relativeA, info.normal)),
+      relativeA);
+
+  Vector3 inertiaB = Vector3CrossProduct(
+      MultiplyMatrixVector3(Binv, Vector3CrossProduct(relativeB, info.normal)),
+      relativeB);
+  float angularEffect =
+      Vector3DotProduct(Vector3Add(inertiaA, inertiaB), info.normal);
+  float cRestitution = (a->restitution + b->restitution) * 0.5f;
+
+  float j =
+      (-(1.0f + cRestitution) * impulseForce) / (totalMass + angularEffect);
+
+  Vector3 fullImpulse = Vector3Scale(info.normal, j);
+  a->linearVelocity = Vector3Add(
+      a->linearVelocity, Vector3Scale(Vector3Negate(fullImpulse), a->invMass));
+
+  b->linearVelocity =
+      Vector3Add(b->linearVelocity, Vector3Scale(fullImpulse, b->invMass));
+
+  a->angularMomentum =
+      Vector3Add(a->angularMomentum,
+                 Vector3CrossProduct(relativeA, Vector3Negate(fullImpulse)));
+
+  b->angularMomentum = Vector3Add(b->angularMomentum,
+                                  Vector3CrossProduct(relativeA, fullImpulse));
 }
 
-void ApplyImpulseCuboidRBSB(RigidBody *rbA, RigidBody *rbB, Vector3 mtv,
-                            Vector3 contactPoint, Vector3 aDims,
-                            Vector3 bDims) {
-
-  // === STEP 1: POSITIONAL CORRECTION (SEPARATION) ===
-  Vector3 normal = Vector3Normalize(mtv);
-  float penetration = Vector3Length(mtv);
-
-  // Get inertia properties
-  // Matrix3 Ia_inv = CuboidComputeInvInertiaMatrix(aDims, rbA->density);
-  Matrix3 Ia_inv = rbA->invInertiaMatrix;
-
-  // Calculate correction based on mass ratio
-  float totalInvMass = rbA->invMass;
-
-  if (totalInvMass > 0.0f) {
-    float correctionPercent = 1.0f; // How much penetration to correct (80%)
-    float slop = 0.001f;            // Allow small penetration to avoid jitter
-    float correctionMagnitude =
-        fmaxf(penetration - slop, 0.0f) * correctionPercent / totalInvMass;
-
-    Vector3 correction = Vector3Scale(normal, correctionMagnitude);
-
-    float ratioA = rbA->invMass / totalInvMass;
-    rbA->position =
-        Vector3Subtract(rbA->position, Vector3Scale(correction, ratioA));
-  }
-
-  // === STEP 2: IMPULSE RESOLUTION ===
-
-  // Calculate relative velocity at contact point
-  Vector3 rA = Vector3Subtract(contactPoint,
-                               rbA->position); // Contact point relative to A
-  Vector3 rB = Vector3Subtract(contactPoint,
-                               rbB->position); // Contact point relative to B
-  Vector3 wA =
-      ComputeAngularVelocity(Ia_inv, rbA->rotation, rbA->angularMomentum);
-
-  // Velocity at contact point = linear velocity + (angular velocity × radius)
-  Vector3 velA = Vector3Add(rbA->linearVelocity, Vector3CrossProduct(wA, rA));
-
-  Vector3 relativeVel = Vector3Subtract(Vector3Zero(), velA);
-  float velAlongNormal = Vector3DotProduct(relativeVel, normal);
-
-  // Don't resolve if objects are separating
-  if (velAlongNormal > 0)
-    return;
-
-  // Calculate restitution (bounciness)
-  float restitution = fminf(rbA->restitution, rbB->restitution);
-
-  // Clamp restitution on resting contact
-  if (velAlongNormal > -0.5f)
-    restitution = 0.0f;
-
-  // Calculate impulse scalar
-  // float impulseScalar = -(1.0f + restitution)*velAlongNormal;
-  float impulseScalar = -(restitution)*velAlongNormal;
-
-  // Add rotational effects to impulse calculation
-  Vector3 rA_cross_n = Vector3CrossProduct(rA, normal);
-  Vector3 rB_cross_n = Vector3CrossProduct(rB, normal);
-
-  float rotationalEffect = 0.0f;
-  Vector3 temp = Vector3CrossProduct(rA_cross_n, rA);
-  temp = (Vector3){temp.x * Ia_inv.m0, temp.y * Ia_inv.m4, temp.z * Ia_inv.m8};
-  rotationalEffect += Vector3DotProduct(temp, normal);
-
-  impulseScalar /= totalInvMass + rotationalEffect;
-  Vector3 impulse = Vector3Scale(normal, impulseScalar);
-
-  // Apply linear impulses
-  rbA->linearVelocity =
-      Vector3Subtract(rbA->linearVelocity, Vector3Scale(impulse, rbA->invMass));
-  Vector3 angularImpulse =
-      Vector3CrossProduct(rA, Vector3Scale(impulse, -1.0f));
-  rbA->angularMomentum = Vector3Add(rbA->angularMomentum, angularImpulse);
-
-  // === STEP 3: FRICTION ===
-
-  // Recalculate relative velocity after normal impulse
-
-  wA = ComputeAngularVelocity(rbA->invInertiaMatrix, rbA->rotation,
-                              rbA->angularMomentum);
-
-  velA = Vector3Add(rbA->linearVelocity, Vector3CrossProduct(wA, rA));
-
-  relativeVel = Vector3Subtract(Vector3Zero(), velA);
-
-  // Calculate tangent vector (friction direction)
-  Vector3 tangent = Vector3Subtract(
-      relativeVel,
-      Vector3Scale(normal, Vector3DotProduct(relativeVel, normal)));
-  if (Vector3Length(tangent) > 1e-6f) {
-    tangent = Vector3Normalize(tangent);
-
-    float friction = sqrtf(rbA->friction * rbB->friction); // Geometric mean
-    float frictionImpulse = -Vector3DotProduct(relativeVel, tangent);
-
-    // Coulomb friction model
-    if (fabsf(frictionImpulse) < impulseScalar * friction) {
-      // Static friction
-      frictionImpulse = frictionImpulse;
-    } else {
-      // Kinetic friction
-      frictionImpulse =
-          -impulseScalar * friction * (frictionImpulse > 0 ? 1.0f : -1.0f);
-    }
-
-    Vector3 frictionVector = Vector3Scale(tangent, frictionImpulse);
-
-    // Apply friction impulses
-    rbA->linearVelocity = Vector3Subtract(
-        rbA->linearVelocity, Vector3Scale(frictionVector, rbA->invMass));
-    Vector3 angularFriction =
-        Vector3CrossProduct(rA, Vector3Scale(frictionVector, -1.0f));
-    rbA->angularMomentum = Vector3Add(rbA->angularMomentum, angularFriction);
-  }
-
-  // Optional: Debug output
-  printf("Collision: %d, ImpulseScalar: %.2f, Contact: (%.2f,%.2f,%.2f), "
-         "AngImpulseMagSq: %.2f\n",
-         collisionCount, impulseScalar, contactPoint.x, contactPoint.y,
-         contactPoint.z, Vector3LengthSqr(angularImpulse));
-}
-
-// void ApplyImpulse(RigidBody *a, RigidBody *b, Vector3 contactPoint,
-//                   Vector3 normal, float penetrationDepth) {
-//   float restitution = (a->restitution + b->restitution) * 0.5f;
-//   float friction = (a->friction + b->friction) * 0.5f;
-//
-//   Vector3 ra = Vector3Subtract(contactPoint, a->position);
-//   Vector3 rb = Vector3Subtract(contactPoint, b->position);
-//
-//   // Recompute angular linearVelocity from angular momentum
-//   Matrix3 Ia_inv;
-//   Vector3 ACoM;
-//   float Amass;
-//   MeshComputeInertiaMatrix(a->mesh, a->density, &Ia_inv, &ACoM, &Amass);
-//
-//   Matrix3 Ib_inv;
-//   Vector3 BCoM;
-//   float Bmass;
-//   MeshComputeInertiaMatrix(b->mesh, b->density, &Ib_inv, &BCoM, &Bmass);
-//
-//   Vector3 wa = ComputeAngularVelocity(Ia_inv, a->rotation,
-//   a->angularMomentum); Vector3 wb = ComputeAngularVelocity(Ib_inv,
-//   b->rotation, b->angularMomentum);
-//
-//   // Compute linearVelocity at contact point
-//   Vector3 va = Vector3Add(a->linearVelocity, Vector3CrossProduct(wa, ra));
-//   Vector3 vb = Vector3Add(b->linearVelocity, Vector3CrossProduct(wb, rb));
-//   Vector3 relativelinearVelocity = Vector3Subtract(vb, va);
-//
-//   float contactVel = Vector3DotProduct(relativelinearVelocity, normal);
-//
-//   if (contactVel > 0.0f)
-//     return; // No impulse needed if separating
-//
-//   // Calculate impulse scalar
-//   Vector3 raCrossN = Vector3CrossProduct(ra, normal);
-//   Vector3 rbCrossN = Vector3CrossProduct(rb, normal);
-//   Vector3 Ia_raCrossN = Vector3Transform(raCrossN, Matrix3ToMatrix(Ia_inv));
-//   Vector3 Ib_rbCrossN = Vector3Transform(rbCrossN, Matrix3ToMatrix(Ib_inv));
-//
-//   float denom =
-//       (1.0f / Amass) + (1.0f / Bmass) +
-//       Vector3DotProduct(Vector3CrossProduct(Ia_raCrossN, ra), normal) +
-//       Vector3DotProduct(Vector3CrossProduct(Ib_rbCrossN, rb), normal);
-//
-//   float j = -(1.0f + restitution) * contactVel / denom;
-//   // NOTE j*0.5 is my own thing, normally just j
-//   Vector3 impulse = Vector3Scale(normal, j * 0.5f);
-//
-//   // Apply linear impulse
-//   a->linearVelocity =
-//       Vector3Subtract(a->linearVelocity, Vector3Scale(impulse, 1.0f /
-//       Amass));
-//   b->linearVelocity =
-//       Vector3Add(b->linearVelocity, Vector3Scale(impulse, 1.0f / Bmass));
-//
-//   // Apply angular impulse to angular momentum
-//   a->angularMomentum =
-//       Vector3Subtract(a->angularMomentum, Vector3CrossProduct(ra, impulse));
-//   b->angularMomentum =
-//       Vector3Add(b->angularMomentum, Vector3CrossProduct(rb, impulse));
-//
-//   // --- Friction impulse ---
-//   Vector3 tangent = Vector3Subtract(
-//       relativelinearVelocity,
-//       Vector3Scale(normal, Vector3DotProduct(relativelinearVelocity,
-//       normal)));
-//   if (Vector3LengthSqr(tangent) > EPSILON) {
-//     tangent = Vector3Normalize(tangent);
-//     float jt = -Vector3DotProduct(relativelinearVelocity, tangent) / denom;
-//     jt = Clamp(jt, -j * friction, j * friction);
-//
-//     Vector3 frictionImpulse = Vector3Scale(tangent, jt);
-//
-//     a->linearVelocity = Vector3Subtract(
-//         a->linearVelocity, Vector3Scale(frictionImpulse, 1.0f / Amass));
-//     b->linearVelocity = Vector3Add(b->linearVelocity,
-//                                    Vector3Scale(frictionImpulse, 1.0f /
-//                                    Bmass));
-//
-//     a->angularMomentum = Vector3Subtract(
-//         a->angularMomentum, Vector3CrossProduct(ra, frictionImpulse));
-//     b->angularMomentum = Vector3Add(b->angularMomentum,
-//                                     Vector3CrossProduct(rb,
-//                                     frictionImpulse));
-//   }
-// }
-//
 void ClaudeResolveCollision(RigidBody *rbA, RigidBody *rbB, Vector3 mtv,
                             Vector3 contactPoint) {
 
@@ -827,28 +322,228 @@ void ClaudeResolveCollision(RigidBody *rbA, RigidBody *rbB, Vector3 mtv,
   }
 }
 
-typedef enum CollisionType { EdgeEdge = 0, VertexFace, FaceFace } CollisionType;
+// Helper function to transform a point by inverse of orientation
+Vector3 InverseTransformPoint(Vector3 point, Quaternion orientation,
+                              Vector3 position) {
+  Quaternion invOrientation = QuaternionInvert(orientation);
+  Vector3 translated = Vector3Subtract(point, position);
+  return Vector3RotateByQuaternion(translated, invOrientation);
+}
+
+// Helper function to get the 8 vertices of an OBB
+void GetOBBVertices(OBB obb, Vector3 vertices[8]) {
+  Matrix transform = QuaternionToMatrix(obb.orientation);
+
+  Vector3 extents[8] = {
+      {obb.halfExtents.x, obb.halfExtents.y, obb.halfExtents.z},
+      {obb.halfExtents.x, obb.halfExtents.y, -obb.halfExtents.z},
+      {obb.halfExtents.x, -obb.halfExtents.y, obb.halfExtents.z},
+      {obb.halfExtents.x, -obb.halfExtents.y, -obb.halfExtents.z},
+      {-obb.halfExtents.x, obb.halfExtents.y, obb.halfExtents.z},
+      {-obb.halfExtents.x, obb.halfExtents.y, -obb.halfExtents.z},
+      {-obb.halfExtents.x, -obb.halfExtents.y, obb.halfExtents.z},
+      {-obb.halfExtents.x, -obb.halfExtents.y, -obb.halfExtents.z}};
+
+  for (int i = 0; i < 8; i++) {
+    Vector3 transformed = Vector3Transform(extents[i], transform);
+    vertices[i] = Vector3Add(transformed, obb.position);
+  }
+}
+
+// Helper function to get the 15 potential separating axes for SAT
+void GetSeparatingAxes(OBB a, OBB b, Vector3 axes[15]) {
+  Matrix aRot = QuaternionToMatrix(a.orientation);
+  Matrix bRot = QuaternionToMatrix(b.orientation);
+
+  // Get the local axes for each OBB
+  Vector3 aAxes[3] = {
+      {aRot.m0, aRot.m1, aRot.m2}, // Right
+      {aRot.m4, aRot.m5, aRot.m6}, // Up
+      {aRot.m8, aRot.m9, aRot.m10} // Forward
+  };
+
+  Vector3 bAxes[3] = {
+      {bRot.m0, bRot.m1, bRot.m2}, // Right
+      {bRot.m4, bRot.m5, bRot.m6}, // Up
+      {bRot.m8, bRot.m9, bRot.m10} // Forward
+  };
+
+  // Face axes from box A (3)
+  axes[0] = aAxes[0];
+  axes[1] = aAxes[1];
+  axes[2] = aAxes[2];
+
+  // Face axes from box B (3)
+  axes[3] = bAxes[0];
+  axes[4] = bAxes[1];
+  axes[5] = bAxes[2];
+
+  // Edge-edge cross products (9)
+  axes[6] = Vector3CrossProduct(aAxes[0], bAxes[0]);
+  axes[7] = Vector3CrossProduct(aAxes[0], bAxes[1]);
+  axes[8] = Vector3CrossProduct(aAxes[0], bAxes[2]);
+  axes[9] = Vector3CrossProduct(aAxes[1], bAxes[0]);
+  axes[10] = Vector3CrossProduct(aAxes[1], bAxes[1]);
+  axes[11] = Vector3CrossProduct(aAxes[1], bAxes[2]);
+  axes[12] = Vector3CrossProduct(aAxes[2], bAxes[0]);
+  axes[13] = Vector3CrossProduct(aAxes[2], bAxes[1]);
+  axes[14] = Vector3CrossProduct(aAxes[2], bAxes[2]);
+
+  // Normalize all axes
+  for (int i = 0; i < 15; i++) {
+    // Skip zero vectors (happens when axes are parallel)
+    if (Vector3Length(axes[i]) < FLT_EPSILON) {
+      axes[i] = Vector3Zero();
+      continue;
+    }
+    axes[i] = Vector3Normalize(axes[i]);
+  }
+}
+
+// Project OBB onto axis and get min and max projection values
+void ProjectOBBNew(OBB obb, Vector3 axis, float *min, float *max) {
+  Matrix transform = QuaternionToMatrix(obb.orientation);
+
+  Vector3 extents = obb.halfExtents;
+  Vector3 vertices[8] = {{extents.x, extents.y, extents.z},
+                         {extents.x, extents.y, -extents.z},
+                         {extents.x, -extents.y, extents.z},
+                         {extents.x, -extents.y, -extents.z},
+                         {-extents.x, extents.y, extents.z},
+                         {-extents.x, extents.y, -extents.z},
+                         {-extents.x, -extents.y, extents.z},
+                         {-extents.x, -extents.y, -extents.z}};
+
+  *min = FLT_MAX;
+  *max = -FLT_MAX;
+
+  for (int i = 0; i < 8; i++) {
+    Vector3 vertex = Vector3Transform(vertices[i], transform);
+    vertex = Vector3Add(vertex, obb.position);
+
+    float projection = Vector3DotProduct(vertex, axis);
+    if (projection < *min)
+      *min = projection;
+    if (projection > *max)
+      *max = projection;
+  }
+}
+
+// Check for collision between two OBBs using SAT
+CollisionInfo CheckOBBCollision(OBB a, OBB b) {
+  CollisionInfo result = {0};
+  result.isColliding = false;
+
+  Vector3 axes[15];
+  GetSeparatingAxes(a, b, axes);
+
+  float minPenetration = FLT_MAX;
+  Vector3 mtvAxis = Vector3Zero();
+
+  for (int i = 0; i < 15; i++) {
+    Vector3 axis = axes[i];
+
+    // Skip zero axes (from parallel edge cross products)
+    if (Vector3Length(axis) < FLT_EPSILON)
+      continue;
+
+    // Project both OBBs onto the axis
+    float aMin, aMax, bMin, bMax;
+    ProjectOBBNew(a, axis, &aMin, &aMax);
+    ProjectOBBNew(b, axis, &bMin, &bMax);
+
+    // Check for overlap
+    if (aMax < bMin || bMax < aMin) {
+      // No overlap on this axis - no collision
+      return result;
+    }
+
+    // Calculate penetration depth
+    float penetration = fminf(aMax - bMin, bMax - aMin);
+
+    // Track the axis with minimal penetration
+    if (penetration < minPenetration) {
+      minPenetration = penetration;
+      mtvAxis = axis;
+    }
+  }
+
+  // If we get here, all axes had overlap - collision occurred
+  result.isColliding = true;
+  result.penetrationDepth = minPenetration;
+
+  // Ensure MTV points from A to B
+  Vector3 centerA = a.position;
+  Vector3 centerB = b.position;
+  Vector3 centerDiff = Vector3Subtract(centerB, centerA);
+
+  if (Vector3DotProduct(centerDiff, mtvAxis) < 0) {
+    mtvAxis = Vector3Negate(mtvAxis);
+  }
+
+  result.normal = mtvAxis;
+  result.mtv = Vector3Scale(mtvAxis, minPenetration);
+
+  // Calculate approximate collision location (center of overlapping region)
+  Vector3 aVertices[8], bVertices[8];
+  GetOBBVertices(a, aVertices);
+  GetOBBVertices(b, bVertices);
+
+  // Find all vertices of A that are inside B and vice versa
+  Vector3 insidePoints[16]; // Max possible is 8+8
+  int pointCount = 0;
+
+  for (int i = 0; i < 8; i++) {
+    Vector3 localPoint =
+        InverseTransformPoint(aVertices[i], b.orientation, b.position);
+    if (fabsf(localPoint.x) <= b.halfExtents.x &&
+        fabsf(localPoint.y) <= b.halfExtents.y &&
+        fabsf(localPoint.z) <= b.halfExtents.z) {
+      insidePoints[pointCount++] = aVertices[i];
+    }
+  }
+
+  for (int i = 0; i < 8; i++) {
+    Vector3 localPoint =
+        InverseTransformPoint(bVertices[i], a.orientation, a.position);
+    if (fabsf(localPoint.x) <= a.halfExtents.x &&
+        fabsf(localPoint.y) <= a.halfExtents.y &&
+        fabsf(localPoint.z) <= a.halfExtents.z) {
+      insidePoints[pointCount++] = bVertices[i];
+    }
+  }
+
+  // Calculate average of all inside points
+  if (pointCount > 0) {
+    Vector3 sum = Vector3Zero();
+    for (int i = 0; i < pointCount; i++) {
+      sum = Vector3Add(sum, insidePoints[i]);
+    }
+    result.location = Vector3Scale(sum, 1.0f / pointCount);
+  } else {
+    // Fallback if no points are inside (shouldn't happen with SAT)
+    result.location = Vector3Lerp(a.position, b.position, 0.5f);
+  }
+
+  return result;
+}
 
 void HandleCuboidRBCollisions(RigidBody *a, RigidBody *b, Vector3 aDims,
                               Vector3 bDims) {
 
-  Vector3 mtv;
-  Vector3 contactPoint;
-  if (OBBvsOBB(a->position, a->rotation, aDims, b->position, b->rotation, bDims,
-               &mtv, NULL)) {
-    collisionCount++;
-    // check what type of collision it is:
-
-    // printf("COLLISION FOUND, COUNT: %d\n", collisionCount);
-    float penetration = Vector3Length(mtv);
-    Vector3 normal = Vector3Normalize(mtv);
+  // Vector3 mtv;
+  // Vector3 contactPoint;
+  OBB obbA = CuboidToObb(a->position, a->rotation, aDims);
+  OBB obbB = CuboidToObb(b->position, b->rotation, bDims);
+  CollisionInfo info = CheckOBBCollision(obbA, obbB);
+  // info.normal = Vector3Scale(info.normal, -1.0f);
+  if (info.isColliding) {
 
     const float slop = 0.0001f;
-    if (penetration > slop) {
-      PushDebugContact(contactPoint, normal, penetration);
-      printf("contactPoint: (%f, %f, %f)\n", contactPoint.x, contactPoint.y,
-             contactPoint.z);
-      ClaudeResolveCollision(a, b, mtv, contactPoint);
+    if (info.penetrationDepth > slop) {
+      PushDebugContact(info.location, info.normal, info.penetrationDepth);
+      ResolveCollision(a, b, info);
+      // ClaudeResolveCollision(a, b, info.mtv, info.location);
     }
   }
 }

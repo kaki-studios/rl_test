@@ -9,8 +9,8 @@
 #include "raygui.h"
 
 #define CAMERA_RADIUS 15.0f
-#define LINEAR_DAMPING 0.1f
-#define ANGULAR_DAMPING 0.0f
+#define LINEAR_DAMPING 2.0f
+#define ANGULAR_DAMPING 1.0f
 
 #define RB_COUNT 2
 #if defined(PLATFORM_DESKTOP)
@@ -46,7 +46,7 @@ int main(void) {
                                     QuaternionIdentity(), sb_dims);
 
   rbs[0] = CreateCuboidRB(2.0f, (Vector3){0.0f, 5.0f, 0.0f}, rb_dims);
-  rbs[0].angularMomentum = (Vector3){150.0f, 0.1f, 0.1f};
+  // rbs[0].angularMomentum = (Vector3){150.0f, 0.1f, 0.1f};
   rbs[0].linearVelocity = (Vector3){-3.0f, -10.0f, 0.0f};
 
   rbs[1] = CreateCuboidRB(2.0f, (Vector3){-20.0f, 5.0f, 0.0f}, rb_dims);
@@ -127,7 +127,7 @@ int main(void) {
         }
       }
       for (int i = 0; i < RB_COUNT; i++) {
-        // rbs[i].linearVelocity.y -= 9.81 * H * simulationSpeed;
+        rbs[i].linearVelocity.y -= 9.81 * H * simulationSpeed;
         rbs[i].linearVelocity = Vector3Scale(
             rbs[i].linearVelocity, 1 - LINEAR_DAMPING * H * simulationSpeed);
         rbs[i].angularMomentum = Vector3Scale(
@@ -153,16 +153,18 @@ int main(void) {
     }
     DrawMesh(*ground.mesh, mat_ground, ground.transform);
     // hammer
-    DrawMesh(*rb2.mesh, hammerModel.materials[0], rb2.transform);
-    DrawLine3D(rb2.position, Vector3Add(rb2.position, rb2.angularMomentum),
-               GREEN);
-    DrawLine3D(rb2.position, Vector3Add(rb2.position, rb2.linearVelocity), RED);
+    // DrawMesh(*rb2.mesh, hammerModel.materials[0], rb2.transform);
+    //
+    // DrawLine3D(rb2.position, Vector3Add(rb2.position, rb2.angularMomentum),
+    //            GREEN);
+    // DrawLine3D(rb2.position, Vector3Add(rb2.position, rb2.linearVelocity),
+    // RED);
 
     // In draw loop:
     const DebugContact *dcList = GetDebugContacts();
     for (int i = 0; i < GetDebugContactCount(); i++) {
       DebugContact dc = dcList[i];
-      DrawSphere(dc.position, 0.5f, RED);
+      DrawSphere(dc.position, 0.25f, RED);
       // DrawLine3D(dc.position,
       //            Vector3Add(dc.position, Vector3Scale(dc.normal, 1.0f)),
       //            GREEN);
@@ -181,6 +183,10 @@ int main(void) {
 
     EndMode3D();
     DrawFPS(50, 50);
+    for (int i = 0; i < GetDebugContactCount(); i++) {
+      DrawText(TextFormat("Penetration [%d]: %f", i, dcList[i]), 700,
+               50 + i * 20, 20, BLACK);
+    }
     GuiSliderBar((Rectangle){100.f, 50.f, 100.f, 50.f}, "simSpeed", "",
                  &simulationSpeed, 0.0f, 1.0f);
     EndDrawing();
